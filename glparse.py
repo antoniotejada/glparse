@@ -280,8 +280,8 @@ def main():
     ##trace = xopen(r"_out/com.amazon.kindle.otter.gltrace.gz", "rb")
     ##trace = xopen(r"_out\contactsShowcaseAnimation.gltrace.gz", "rb")
     ##trace = xopen(r"_out\bmk_hw_layer.gltrace.gz", "rb")
-    ##trace = xopen(r"_out\bmk_bitmap.gltrace.gz", "rb")
-    trace = xopen(r"_out\kipo.gltrace", "rb")
+    trace = xopen(r"_out\bmk_bitmap.gltrace.gz", "rb")
+    ##trace = xopen(r"_out\kipo.gltrace", "rb")
 
     # Every argument can be optionally translated using a translation table
     # Each translation table contains:
@@ -465,8 +465,11 @@ def main():
 
         logger.debug("Found function %s" % function_name)
 
+        # Add frame check
+        if (function_name == "eglSwapBuffers"):
+            print "if (frame_count++ >= frame_limit) { return; }"
         # XXX Remove
-        ##if (function_name == "eglSwapBuffers"):
+        ## if (function_name == "eglSwapBuffers"):
         ##    break
 
         # Do translation machinery context in/out
@@ -857,7 +860,11 @@ def main():
         print 'LOGI("0x%%x: %s", glGetError());' % program_line
         print program_line
         logger.debug(program_line)
-        print 'glFinish();'
+        ## print 'glFinish();'
+
+        # Add draw check
+        if (function_name in ['glDrawElements', 'glDrawArrays']):
+            print "if (draw_count++ > draw_limit) { return; }"
 
 
 if (__name__ == "__main__"):
