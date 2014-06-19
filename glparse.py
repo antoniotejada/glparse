@@ -271,7 +271,7 @@ def update_translation_machinery_from_xml(translation_tables, translation_lookup
     logger.info("Updated translation machinery")
 
 def main():
-    LOG_LEVEL=logging.INFO
+    LOG_LEVEL=logging.DEBUG
 
     logger.setLevel(LOG_LEVEL)
 
@@ -280,8 +280,10 @@ def main():
     ##trace = xopen(r"_out/com.amazon.kindle.otter.gltrace.gz", "rb")
     ##trace = xopen(r"_out\contactsShowcaseAnimation.gltrace.gz", "rb")
     ##trace = xopen(r"_out\bmk_hw_layer.gltrace.gz", "rb")
-    trace = xopen(r"_out\bmk_bitmap.gltrace.gz", "rb")
-    ##trace = xopen(r"_out\kipo.gltrace", "rb")
+    trace = xopen("_out/bmk_bitmap.gltrace.gz", "rb")
+    ##trace = xopen("_out/kipo.gltrace.gz", "rb")
+    ##trace = xopen(r"_out\otter.gltrace.gz", "rb")
+    ##trace = xopen(r"_out/GTAVC.gltrace.gz", "rb")
 
     # Every argument can be optionally translated using a translation table
     # Each translation table contains:
@@ -439,11 +441,14 @@ def main():
         # "glBindTexture"   : { 0 : { "field" : "intValue", "table" : "TextureTarget" }},
     }
 
+
+    ##max_frame_count = sys.maxint
+    max_frame_count = 100
     # This can be disabled to save ~5s of time
-    # XXX This needs fixing so:
-    # - it doesn't use global tables with enums that gles2 doesn't have
-    # - it doesn't override runtime look up tables (not clear why this happens)
+    # XXX This needs fixing so it doesn't use global tables with enums that gles2
+    #     doesn't have
     use_human_friendly_gl_enums = True
+    generate_empty_textures = False
     if (use_human_friendly_gl_enums):
         update_translation_machinery_from_xml(translation_tables, translation_lookups)
 
@@ -451,6 +456,8 @@ def main():
     # so we don't generate a variable with the same name twice
     allocated_vars = 0
     current_state = { 'program' : None, 'context' : None }
+    frame_count = 0
+    function_enum_type = gltrace_pb2.GLMessage.DESCRIPTOR.enum_types_by_name['Function']
     while True:
         buffer_length = trace.read(4)
         if (buffer_length == ""):
@@ -460,13 +467,16 @@ def main():
         buffer = trace.read(buffer_length)
         msg = gltrace_pb2.GLMessage.FromString(buffer)
 
-        function_name = gltrace_pb2.GLMessage.Function.DESCRIPTOR.values_by_number[msg.function].name
+        function_name = function_enum_type.values_by_number[msg.function].name
         function_string = function_name
 
         logger.debug("Found function %s" % function_name)
 
         # Add frame check
         if (function_name == "eglSwapBuffers"):
+            frame_count += 1
+            if (frame_count > max_frame_count):
+                break
             print "if (frame_count++ >= frame_limit) { return; }"
         # XXX Remove
         ## if (function_name == "eglSwapBuffers"):
@@ -551,6 +561,14 @@ def main():
             (function_name == "eglSwapBuffers")):
             continue
 
+        if (function_name in ["glVertexAttrib1fv",
+                              "glVertexAttrib2fv",
+                              "glVertexAttrib3fv",
+                              "glVertexAttrib4fv"]):
+            # WAR glVertexAttrib4fv doesn't provide data, ignore it
+            logger.debug("Ignoring glVertexAttribNv function as the trace doesn't provide the value")
+            continue
+
         args_strings = []
         preamble_strings = []
 
@@ -562,6 +580,7 @@ def main():
             logger.debug("Found arg %s" % str(arg))
 
             # Patch wrong functions
+            # XXX Use function code rather than function name
             if ((function_name == "glGetVertexAttribiv") and (arg_index == 2)):
                 # XXX The trace sends intValue with isArray false
                 logger.debug("Patching function %s" % function_name)
@@ -629,12 +648,28 @@ def main():
                 # to signify that it's an array of char arrays
                 if (arg_index == 2):
                     arg.isArray = False
+                # Always set the length pointer to zero, as we don't need it
+                # and passing random pointers causes errors otherwise
+                if (arg_index == 3):
+                    arg.intValue[0] = 0
 
             elif ((function_name == "glTexParameteri") and (arg_index == 2)):
                 # glTexParameteri has an INT as last parameter but in real life
                 # it's always an ENUM
                 # Switch to ENUM so it gets translated
                 arg.type = gltrace_pb2.GLMessage.DataType.ENUM
+
+            elif (generate_empty_textures and
+                  (((function_name == "glTexImage2D") and (arg_index == 8)) or
+                   ((function_name == "glTexSubImage2D") and (arg_index == 8)) or
+                   ((function_name == "glTexImage3D") and (arg_index == 9)) or
+                   ((function_name == "glTexSubImage3D") and (arg_index == 10)) or
+                   ((function_name == "glCompressedTexImage2D") and (arg_index == 7)) or
+                   ((function_name == "glCompressedTexSubImage2D") and (arg_index == 8)))):
+                # Set the texture pointer to NULL
+                arg.type = gltrace_pb2.GLMessage.DataType.VOID
+                arg.isArray = False
+                arg.intValue[0] = 0
 
             # Do argument translation lookup if necessary
             lookup = translation_lookup.get(arg_index, None)
@@ -692,14 +727,16 @@ def main():
             if ((len(arg.floatValue) > 0) and (arg.isArray)):
                 arg_name = "ptr%d" % allocated_vars
                 allocated_vars += 1
-                preamble_strings.append("static float %s[] = { %s }" % (
+                preamble_strings.append("static const float %s[] = { %s }" % (
                     arg_name,
                     string.join([str(f) for f in arg.floatValue], ", ")))
                 args_strings.append(arg_name)
 
             # When rawbytes is set, initialized data is passed in
-            # (glTexSubImage2D, glTexImage2D, etc)
-            elif (len(arg.rawBytes) > 0):
+            # (glTexSubImage2D, glTexImage2D with BYTE, glBufferData with VOID, etc)
+            # Note isArray is set to False above when NULLing textures, so ignore
+            # those
+            elif ((len(arg.rawBytes) > 0) and (arg.isArray)):
                 dwords = bytes_to_dwords(arg.rawBytes[0])
                 arg_name = "ptr%d" % allocated_vars
                 allocated_vars += 1
@@ -843,7 +880,7 @@ def main():
             # Create a new variable to hold the return value
             var_name = "var%d" % allocated_vars
             allocated_vars += 1
-            preamble_strings.append("unsigned int %s" % var_name)
+            preamble_strings.append("static unsigned int %s" % var_name)
 
             table[value] = var_name
             logger.debug("Updated table %s entry %d to return value %s" %
@@ -857,14 +894,17 @@ def main():
             logger.debug("%s;" % preamble)
             print "%s;" % preamble
         program_line = "%s(%s);" % (function_string, string.join(args_strings, ", "))
-        print 'LOGI("0x%%x: %s", glGetError());' % program_line
-        print program_line
+        print "if ((frame_limit == 0x7FFFFFFF) || (frame_count == frame_limit)) {"
+        print '  LOGI("0x%%x: %s", glGetError());' % program_line
+        print "  %s" % program_line
+        print "}"
+
         logger.debug(program_line)
         ## print 'glFinish();'
 
         # Add draw check
         if (function_name in ['glDrawElements', 'glDrawArrays']):
-            print "if (draw_count++ > draw_limit) { return; }"
+            print "if (draw_count == draw_limit) { return; }"
 
 
 if (__name__ == "__main__"):

@@ -15,6 +15,10 @@
  *
  */
 
+ /**
+  * @see http://en.wikibooks.org/wiki/OpenGL_Programming/Android_GLUT_Wrapper
+  */
+
 //BEGIN_INCLUDE(all)
 #include <jni.h>
 #include <errno.h>
@@ -71,11 +75,11 @@ static int engine_init_display(struct engine* engine) {
      */
     const EGLint attribs[] = {
             EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
-            EGL_CONFORMANT, EGL_OPENGL_ES2_BIT,
+            EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
             EGL_BLUE_SIZE, 8,
             EGL_GREEN_SIZE, 8,
             EGL_RED_SIZE, 8,
-            //EGL_DEPTH_SIZE, 24,
+            EGL_DEPTH_SIZE, 16,
             EGL_NONE
     };
     EGLint w, h, dummy, format;
@@ -136,8 +140,14 @@ static int engine_init_display(struct engine* engine) {
     return 0;
 }
 
+#ifndef TRUE
+#define FALSE (0 != 0)
+#define TRUE (!FALSE)
+#endif
+
 int draw_limit = 0;
 int frame_limit = 0;
+int stop_motion = TRUE;
 void draw(int draw_limit, int frame_limit);
 
 /**
@@ -158,11 +168,23 @@ static void engine_draw_frame(struct engine* engine) {
     LOGI("GL error is 0x%x", glGetError());
 
     // A tap is two events, down + up
-    draw(0x7FFFFFFF, frame_limit/3);
+    if (frame_limit % 2 == 0)
+    {
+        draw(0x7FFFFFFF, frame_limit/2);
+    }
     draw_limit++;
     frame_limit++;
 
     eglSwapBuffers(engine->display, engine->surface);
+
+    if (stop_motion)
+    {
+        engine->animating = 0;
+    }
+    else
+    {
+        engine->animating = 1;
+    }
 }
 
 /**
@@ -329,7 +351,6 @@ void android_main(struct android_app* state) {
             // Drawing is throttled to the screen update rate, so there
             // is no need to do timing here.
             engine_draw_frame(&engine);
-            engine.animating = 0;
         }
     }
 }

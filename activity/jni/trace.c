@@ -31,6 +31,18 @@
 // GLES2 headers don't have this one, but GLES3 do
 #define GL_RED 0x1903
 #endif
+#ifndef GL_PIXEL_UNPACK_BUFFER
+#define GL_PIXEL_UNPACK_BUFFER 0x88ef
+#endif
+#ifndef GL_UNPACK_ROW_LENGTH
+#define GL_UNPACK_ROW_LENGTH 0xcf2
+#endif
+#ifndef GL_DEPTH_COMPONENT24
+#define GL_DEPTH_COMPONENT24 GL_DEPTH_COMPONENT24_OES
+#endif
+#ifndef GL_RGB565_OES
+#define GL_RGB565_OES GL_RGB565
+#endif
 
 GL_APICALL void GL_APIENTRY glStartTilingQCOM (GLuint x, GLuint y, GLuint width, GLuint height, GLbitfield preserveMask)
 {
@@ -52,6 +64,11 @@ void glInsertEventMarkerEXT(GLsizei length, const char *marker)
 void glPopGroupMarkerEXT()
 {
 }
+
+// The trace uses the non OES names, convert them to OES which are the ones exported
+// by gl2.h
+#define glMapBuffer glMapBufferOES
+#define glUnmapBuffer glUnmapBufferOES
 
 GL_APICALL void GL_APIENTRY glDiscardFramebufferEXT(GLenum target, GLsizei numAttachments, const GLenum *attachments)
 {
