@@ -20,7 +20,9 @@
 # https://cvs.khronos.org/svn/repos/ogl/trunk/doc/registry/public/api/gl.xml
 
 import ctypes
+import errno
 import logging
+import os
 import re
 import string
 import struct
@@ -270,8 +272,40 @@ def update_translation_machinery_from_xml(translation_tables, translation_lookup
 
     logger.info("Updated translation machinery")
 
+allocated_assets = set()
+
+def allocate_asset(asset_buffer_ptr, asset_variable_ptr, asset_bytes):
+    """!
+    Register the given asset and unregister
+    """
+    # Free a possible asset allocated to this id
+    code = []
+    if (asset_variable_ptr in allocated_assets):
+        code.extend(free_asset(asset_variable_ptr))
+    else:
+        # It's the first time we see this asset, generate code to create this
+        # asset variable
+        code.append("AAsset* %s = NULL" % asset_variable_ptr);
+    allocated_assets.add(asset_variable_ptr)
+
+    # Save the asset to a file
+    with open("_out/assets/%s" % asset_buffer_ptr, "wb") as f:
+        f.write(asset_bytes)
+
+    # Generate the instructions to load that asset
+    code.extend(['%s = openAsset(pAssetManager, "%s")' % ( asset_variable_ptr, asset_buffer_ptr),
+                 'const unsigned int* %s = (const unsigned int*) AAsset_getBuffer(%s)' % (asset_buffer_ptr, asset_variable_ptr)])
+
+    return code
+
+def free_asset(asset_variable_ptr):
+    allocated_assets.remove(asset_variable_ptr)
+
+    return ["closeAsset(%s)" % asset_variable_ptr,
+            "%s = NULL" % asset_variable_ptr]
+
 def main():
-    LOG_LEVEL=logging.DEBUG
+    LOG_LEVEL=logging.INFO
 
     logger.setLevel(LOG_LEVEL)
 
@@ -280,8 +314,9 @@ def main():
     ##trace = xopen(r"_out/com.amazon.kindle.otter.gltrace.gz", "rb")
     ##trace = xopen(r"_out\contactsShowcaseAnimation.gltrace.gz", "rb")
     ##trace = xopen(r"_out\bmk_hw_layer.gltrace.gz", "rb")
-    trace = xopen("_out/bmk_bitmap.gltrace.gz", "rb")
-    ##trace = xopen("_out/kipo.gltrace.gz", "rb")
+    ##trace = xopen("_out/bmk_bitmap.gltrace.gz", "rb")
+    trace = xopen("_out/kipo.gltrace.gz", "rb")
+    ##trace = xopen("_out/kipo-full.gltrace", "rb")
     ##trace = xopen(r"_out\otter.gltrace.gz", "rb")
     ##trace = xopen(r"_out/GTAVC.gltrace.gz", "rb")
 
@@ -441,9 +476,15 @@ def main():
         # "glBindTexture"   : { 0 : { "field" : "intValue", "table" : "TextureTarget" }},
     }
 
+    # Create the asset directory
+    try:
+        os.mkdir("_out/assets")
+    except OSError as e:
+        if (e.errno != errno.EEXIST):
+            raise
 
     ##max_frame_count = sys.maxint
-    max_frame_count = 100
+    max_frame_count = 300
     # This can be disabled to save ~5s of time
     # XXX This needs fixing so it doesn't use global tables with enums that gles2
     #     doesn't have
@@ -571,6 +612,7 @@ def main():
 
         args_strings = []
         preamble_strings = []
+        epilogue_strings = []
 
         translation_insertion = translation_insertions.get(function_name, {})
         translation_lookup = translation_lookups.get(function_name, {})
@@ -659,17 +701,26 @@ def main():
                 # Switch to ENUM so it gets translated
                 arg.type = gltrace_pb2.GLMessage.DataType.ENUM
 
-            elif (generate_empty_textures and
-                  (((function_name == "glTexImage2D") and (arg_index == 8)) or
+            elif  (((function_name == "glTexImage2D") and (arg_index == 8)) or
                    ((function_name == "glTexSubImage2D") and (arg_index == 8)) or
                    ((function_name == "glTexImage3D") and (arg_index == 9)) or
                    ((function_name == "glTexSubImage3D") and (arg_index == 10)) or
                    ((function_name == "glCompressedTexImage2D") and (arg_index == 7)) or
-                   ((function_name == "glCompressedTexSubImage2D") and (arg_index == 8)))):
-                # Set the texture pointer to NULL
-                arg.type = gltrace_pb2.GLMessage.DataType.VOID
-                arg.isArray = False
-                arg.intValue[0] = 0
+                   ((function_name == "glCompressedTexSubImage2D") and (arg_index == 8))):
+
+                # If the trace contains pointers instead of rawBytes, it means
+                # the trace was generated without texture data, force all textures
+                # to empty to prevent access violations when accessing stale pointers
+                if ((not generate_empty_textures) and
+                    ((len(arg.rawBytes) == 0) and (arg.intValue[0] != 0))):
+                    logger.warning("Trace doesn't contain texture data, forcing all textures to empty")
+                    generate_empty_textures = True
+
+                if (generate_empty_textures):
+                    # Set the texture pointer to NULL
+                    arg.type = gltrace_pb2.GLMessage.DataType.VOID
+                    arg.isArray = False
+                    arg.intValue[0] = 0
 
             # Do argument translation lookup if necessary
             lookup = translation_lookup.get(arg_index, None)
@@ -727,7 +778,7 @@ def main():
             if ((len(arg.floatValue) > 0) and (arg.isArray)):
                 arg_name = "ptr%d" % allocated_vars
                 allocated_vars += 1
-                preamble_strings.append("static const float %s[] = { %s }" % (
+                preamble_strings.append("const float %s[] = { %s }" % (
                     arg_name,
                     string.join([str(f) for f in arg.floatValue], ", ")))
                 args_strings.append(arg_name)
@@ -737,13 +788,20 @@ def main():
             # Note isArray is set to False above when NULLing textures, so ignore
             # those
             elif ((len(arg.rawBytes) > 0) and (arg.isArray)):
-                dwords = bytes_to_dwords(arg.rawBytes[0])
                 arg_name = "ptr%d" % allocated_vars
                 allocated_vars += 1
                 args_strings.append(arg_name)
-                preamble_strings.append("static const unsigned int %s[] = { %s }" % (
-                    arg_name,
-                    string.join([hex(dword) for dword in dwords], ", ")))
+                if (function_name == "glVertexAttribPointerData"):
+                    preamble_strings.extend(allocate_asset(arg_name, "pAsset%d" % msg.args[0].intValue[0], arg.rawBytes[0]))
+                    # The asset will be freed when it's allocated again with
+                    # that name
+                    # XXX Need to free the assets at the end of the trace
+                else:
+                    preamble_strings.extend(allocate_asset(arg_name, "pAsset", arg.rawBytes[0]))
+                    # This is a short-lived asset only used in this GL call, could
+                    # be freed after the call, but that complicates the asset
+                    # variable declaration, so we just free it the next time
+                    # an asset with this name is allocated
 
             # When isArray is set, the parameter is passed by reference and
             # contains a return value, which is held in the xxxValue part
@@ -770,7 +828,10 @@ def main():
                         # VOID
                         preamble_strings.append("GLvoid* %s[1]" % var_name)
                     else:
-                        preamble_strings.append("GLint %s[%d] = {%s}" %
+                        # This is used for eg texture ids, so it needs to preserve
+                        # the data across invocations
+                        # XXX Where else is static needed?
+                        preamble_strings.append("static GLint %s[%d] = {%s}" %
                                     (var_name , len(arg.intValue),
                                      string.join([str(i) for i in arg.intValue], ", ")))
                 args_strings.append(var_name)
@@ -898,6 +959,9 @@ def main():
         print '  LOGI("0x%%x: %s", glGetError());' % program_line
         print "  %s" % program_line
         print "}"
+        for epilogue in epilogue_strings:
+            logger.debug("%s;" % epilogue)
+            print "%s;" % epilogue
 
         logger.debug(program_line)
         ## print 'glFinish();'

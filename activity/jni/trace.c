@@ -21,7 +21,9 @@
  */
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
+#include <memory.h>
 
+#include <android/asset_manager.h>
 #include <android/log.h>
 
 #define LOGI(...) ((void)__android_log_print(ANDROID_LOG_INFO, "native-activity", __VA_ARGS__))
@@ -50,6 +52,24 @@ GL_APICALL void GL_APIENTRY glStartTilingQCOM (GLuint x, GLuint y, GLuint width,
 
 GL_APICALL void GL_APIENTRY glEndTilingQCOM (GLbitfield preserveMask)
 {
+
+}
+
+AAsset* openAsset(AAssetManager* pAssetManager, const char* filename)
+{
+    AAsset* pAsset = AAssetManager_open(pAssetManager, filename, AASSET_MODE_BUFFER);
+
+    if (pAsset == NULL)
+    {
+        LOGW("Unable to open asset %s", filename);
+    }
+
+    return pAsset;
+}
+
+void closeAsset(AAsset* pAsset)
+{
+    AAsset_close(pAsset);
 }
 
 void glPushGroupMarkerEXT(GLsizei length, const char *marker)
@@ -81,7 +101,7 @@ void glVertexAttribPointerData(GLuint index,  GLint size,  GLenum type,  GLboole
     glVertexAttribPointer(index, size, type, normalized, 0, pointer);
 }
 
-void draw(int draw_limit, int frame_limit)
+void draw(AAssetManager* pAssetManager, int draw_limit, int frame_limit)
 {
     int draw_count = 0;
     int frame_count = 0;

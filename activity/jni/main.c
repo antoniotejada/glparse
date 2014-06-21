@@ -74,7 +74,7 @@ static int engine_init_display(struct engine* engine) {
      * component compatible with on-screen windows
      */
     const EGLint attribs[] = {
-            EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+            EGL_SURFACE_TYPE, EGL_WINDOW_BIT | EGL_SWAP_BEHAVIOR_PRESERVED_BIT,
             EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
             EGL_BLUE_SIZE, 8,
             EGL_GREEN_SIZE, 8,
@@ -115,6 +115,13 @@ static int engine_init_display(struct engine* engine) {
     surface = eglCreateWindowSurface(display, config, engine->app->window, NULL);
     context = eglCreateContext(display, config, EGL_NO_CONTEXT, attrib_list);
 
+    // Preserving the backbuffer is necessary since Android 3.0
+    // @see https://android.googlesource.com/platform/frameworks/base.git/+/244ada1d35419b7be9de0fc833bb03955b725ffa%5E!/
+    // @see http://stackoverflow.com/questions/5359361/android-opengl-blending-similar-to-iphone
+    // XXX Make this optional, will need hooks to do the preservation manually if
+    //     it's not supported
+    eglSurfaceAttrib(display, surface, EGL_SWAP_BEHAVIOR, EGL_BUFFER_PRESERVED);
+
     if (eglMakeCurrent(display, surface, surface, context) == EGL_FALSE) {
         LOGW("Unable to eglMakeCurrent");
         return -1;
@@ -147,8 +154,8 @@ static int engine_init_display(struct engine* engine) {
 
 int draw_limit = 0;
 int frame_limit = 0;
-int stop_motion = TRUE;
-void draw(int draw_limit, int frame_limit);
+int stop_motion = FALSE;
+void draw(AAssetManager* pAssetManager, int draw_limit, int frame_limit);
 
 /**
  * Just the current frame in the display.
@@ -167,22 +174,26 @@ static void engine_draw_frame(struct engine* engine) {
     //glClear(GL_COLOR_BUFFER_BIT);
     LOGI("GL error is 0x%x", glGetError());
 
-    // A tap is two events, down + up
-    if (frame_limit % 2 == 0)
-    {
-        draw(0x7FFFFFFF, frame_limit/2);
-    }
-    draw_limit++;
-    frame_limit++;
-
-    eglSwapBuffers(engine->display, engine->surface);
-
     if (stop_motion)
     {
+        // A tap is a few events, down + up
+        if (frame_limit % 3 == 0)
+        {
+            draw(engine->app->activity->assetManager, 0x7FFFFFFF, frame_limit/3);
+            eglSwapBuffers(engine->display, engine->surface);
+        }
+        draw_limit++;
+        frame_limit++;
+
         engine->animating = 0;
     }
     else
     {
+        draw(engine->app->activity->assetManager, 0x7FFFFFFF, frame_limit);
+        eglSwapBuffers(engine->display, engine->surface);
+        draw_limit++;
+        frame_limit++;
+
         engine->animating = 1;
     }
 }

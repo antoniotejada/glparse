@@ -3,7 +3,8 @@ cls
 setlocal
 
 REM Generate the .inc file
-glparse.py > _out\trace.inc 2> _out\trace.log
+del /F /Q /S _out\assets > NUL
+python -O glparse.py > _out\trace.inc 2> _out\trace.log
 
 if ERRORLEVEL 1 GOTO ERROR
 
