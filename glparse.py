@@ -274,7 +274,7 @@ def update_translation_machinery_from_xml(translation_tables, translation_lookup
 
 allocated_assets = set()
 
-def allocate_asset(asset_buffer_ptr, asset_variable_ptr, asset_bytes):
+def allocate_asset(asset_buffer_ptr, asset_variable_ptr, asset_bytes, global_decls):
     """!
     Register the given asset and unregister
     """
@@ -285,7 +285,7 @@ def allocate_asset(asset_buffer_ptr, asset_variable_ptr, asset_bytes):
     else:
         # It's the first time we see this asset, generate code to create this
         # asset variable
-        code.append("AAsset* %s = NULL" % asset_variable_ptr);
+        global_decls.append("AAsset* %s = NULL" % asset_variable_ptr);
     allocated_assets.add(asset_variable_ptr)
 
     # Save the asset to a file
@@ -315,10 +315,11 @@ def main():
     ##trace = xopen(r"_out\contactsShowcaseAnimation.gltrace.gz", "rb")
     ##trace = xopen(r"_out\bmk_hw_layer.gltrace.gz", "rb")
     ##trace = xopen("_out/bmk_bitmap.gltrace.gz", "rb")
-    trace = xopen("_out/kipo.gltrace.gz", "rb")
+    ##trace = xopen("_out/kipo.gltrace.gz", "rb")
+    ##trace = xopen("_out/gl2morphcubeva.gltrace.gz", "rb")
     ##trace = xopen("_out/kipo-full.gltrace", "rb")
     ##trace = xopen(r"_out\otter.gltrace.gz", "rb")
-    ##trace = xopen(r"_out/GTAVC.gltrace.gz", "rb")
+    trace = xopen("_out/GTAVC.gltrace.gz", "rb")
 
     # Every argument can be optionally translated using a translation table
     # Each translation table contains:
@@ -483,13 +484,19 @@ def main():
         if (e.errno != errno.EEXIST):
             raise
 
-    ##max_frame_count = sys.maxint
-    max_frame_count = 300
+    #
+    # Configuration options
+    #
+
+    max_frame_count = sys.maxint
+    ##max_frame_count = 200
     # This can be disabled to save ~5s of time
     # XXX This needs fixing so it doesn't use global tables with enums that gles2
     #     doesn't have
     use_human_friendly_gl_enums = True
     generate_empty_textures = False
+    insert_glfinish_after_gl_functions = False
+    insert_alog_after_gl_functions = False
     if (use_human_friendly_gl_enums):
         update_translation_machinery_from_xml(translation_tables, translation_lookups)
 
@@ -499,6 +506,9 @@ def main():
     current_state = { 'program' : None, 'context' : None }
     frame_count = 0
     function_enum_type = gltrace_pb2.GLMessage.DESCRIPTOR.enum_types_by_name['Function']
+    code = []
+    code_frames = [code]
+    global_decls = []
     while True:
         buffer_length = trace.read(4)
         if (buffer_length == ""):
@@ -513,15 +523,13 @@ def main():
 
         logger.debug("Found function %s" % function_name)
 
-        # Add frame check
+        # Append to the frames and check if this is the final frame
         if (function_name == "eglSwapBuffers"):
+            code = []
+            code_frames.append(code)
             frame_count += 1
             if (frame_count > max_frame_count):
                 break
-            print "if (frame_count++ >= frame_limit) { return; }"
-        # XXX Remove
-        ## if (function_name == "eglSwapBuffers"):
-        ##    break
 
         # Do translation machinery context in/out
         # This could be parameterized in tables, but only two functions cause
@@ -636,6 +644,13 @@ def main():
                 if (arg_index == 7):
                     # XXX The trace sends an extra int with some index?
                     continue
+
+            elif ((function_name == "glDrawElements") and (arg_index == 3)):
+                if (not arg.isArray):
+                    # When using index buffers, the last parameter can be an offset
+                    # instead of an array of indices, convert to pointer to void
+                    # to prevent gcc warnings
+                    arg.type = gltrace_pb2.GLMessage.DataType.VOID
 
             elif ((function_name == "glVertexAttribPointerData") and (arg_index > 5)):
                 # XXX The trace sends two extra ints with some indices?
@@ -792,12 +807,12 @@ def main():
                 allocated_vars += 1
                 args_strings.append(arg_name)
                 if (function_name == "glVertexAttribPointerData"):
-                    preamble_strings.extend(allocate_asset(arg_name, "pAsset%d" % msg.args[0].intValue[0], arg.rawBytes[0]))
+                    preamble_strings.extend(allocate_asset(arg_name, "pAsset%d" % msg.args[0].intValue[0], arg.rawBytes[0], global_decls))
                     # The asset will be freed when it's allocated again with
                     # that name
                     # XXX Need to free the assets at the end of the trace
                 else:
-                    preamble_strings.extend(allocate_asset(arg_name, "pAsset", arg.rawBytes[0]))
+                    preamble_strings.extend(allocate_asset(arg_name, "pAsset", arg.rawBytes[0], global_decls))
                     # This is a short-lived asset only used in this GL call, could
                     # be freed after the call, but that complicates the asset
                     # variable declaration, so we just free it the next time
@@ -821,7 +836,7 @@ def main():
                         initializer = '"\\\n  %s\\n"' % arg.charValue[0].replace("\n", "\\\n  ")
                     else:
                         initializer = '"%s"' % arg.charValue[0]
-                    preamble_strings.append("static GLchar %s[] = %s" % (var_name, initializer))
+                    preamble_strings.append("GLchar %s[] = %s" % (var_name, initializer))
                 elif (len(arg.intValue) > 0):
                     if (arg.type == gltrace_pb2.GLMessage.DataType.VOID):
                         # the parser patches some pointers to void from INTs to
@@ -831,7 +846,7 @@ def main():
                         # This is used for eg texture ids, so it needs to preserve
                         # the data across invocations
                         # XXX Where else is static needed?
-                        preamble_strings.append("static GLint %s[%d] = {%s}" %
+                        global_decls.append("static GLint %s[%d] = {%s}" %
                                     (var_name , len(arg.intValue),
                                      string.join([str(i) for i in arg.intValue], ", ")))
                 args_strings.append(var_name)
@@ -941,7 +956,7 @@ def main():
             # Create a new variable to hold the return value
             var_name = "var%d" % allocated_vars
             allocated_vars += 1
-            preamble_strings.append("static unsigned int %s" % var_name)
+            global_decls.append("static unsigned int %s" % var_name)
 
             table[value] = var_name
             logger.debug("Updated table %s entry %d to return value %s" %
@@ -951,24 +966,49 @@ def main():
 
         logger.debug("Found return %s" % msg.returnValue)
 
-        for preamble in preamble_strings:
-            logger.debug("%s;" % preamble)
-            print "%s;" % preamble
-        program_line = "%s(%s);" % (function_string, string.join(args_strings, ", "))
-        print "if ((frame_limit == 0x7FFFFFFF) || (frame_count == frame_limit)) {"
-        print '  LOGI("0x%%x: %s", glGetError());' % program_line
-        print "  %s" % program_line
-        print "}"
-        for epilogue in epilogue_strings:
-            logger.debug("%s;" % epilogue)
-            print "%s;" % epilogue
-
+        code.extend(preamble_strings)
+        program_line = "%s(%s)" % (function_string, string.join(args_strings, ", "))
+        code.append(program_line)
+        if (insert_alog_after_gl_functions):
+            code.append('LOGI("0x%%x: %s", glGetError())' % program_line)
+        if (insert_glfinish_after_gl_functions):
+            code.append("glFinish()")
+        code.extend(epilogue_strings)
         logger.debug(program_line)
-        ## print 'glFinish();'
 
         # Add draw check
         if (function_name in ['glDrawElements', 'glDrawArrays']):
-            print "if (draw_count == draw_limit) { return; }"
+            # XXX Implement drawXXX stop motion
+            ## print "if (draw_count == draw_limit) { return; }"
+            pass
+
+    # Generate the global declarations
+    for decl in global_decls:
+        print "%s;" % decl
+    print
+
+    # Generate each frame
+    for (frame_count, code) in enumerate(code_frames):
+        print "void frame%s(AAssetManager* pAssetManager)" % frame_count
+        print "{"
+        for line in code:
+            print "    %s;" % line
+        print "}"
+
+    # Generate the code that calls each frame
+    print "void draw(AAssetManager* pAssetManager, int draw_limit, int frame_limit)"
+    print "{"
+    print "    switch (frame_limit)"
+    print "    {"
+    for frame in range(frame_count):
+        print "        case %d: " % frame
+        print "            frame%d(pAssetManager);" % frame
+        print "        break;"
+    print "        default: "
+    print '            LOGI("Ignoring inexistent frame %d", frame_limit);'
+    print "    }"
+    print "}"
+    print
 
 
 if (__name__ == "__main__"):

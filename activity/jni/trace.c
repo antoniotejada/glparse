@@ -45,6 +45,14 @@
 #ifndef GL_RGB565_OES
 #define GL_RGB565_OES GL_RGB565
 #endif
+#ifndef GL_ARB_texture_swizzle
+#define GL_TEXTURE_SWIZZLE_R              0x8E42
+#define GL_TEXTURE_SWIZZLE_G              0x8E43
+#define GL_TEXTURE_SWIZZLE_B              0x8E44
+#define GL_TEXTURE_SWIZZLE_A              0x8E45
+#define GL_TEXTURE_SWIZZLE_RGBA           0x8E46
+#endif
+
 
 GL_APICALL void GL_APIENTRY glStartTilingQCOM (GLuint x, GLuint y, GLuint width, GLuint height, GLbitfield preserveMask)
 {
@@ -94,6 +102,12 @@ GL_APICALL void GL_APIENTRY glDiscardFramebufferEXT(GLenum target, GLsizei numAt
 {
 }
 
+// XXX Implement this
+void *glMapBufferRange(GLenum target, GLintptr offset, GLsizeiptr length, GLbitfield access)
+{
+
+}
+
 void glVertexAttribPointerData(GLuint index,  GLint size,  GLenum type,  GLboolean normalized,  GLsizei stride,  const GLvoid * pointer)
 {
     // The trace stores a non-zero stride, but the attributes are actually
@@ -101,9 +115,4 @@ void glVertexAttribPointerData(GLuint index,  GLint size,  GLenum type,  GLboole
     glVertexAttribPointer(index, size, type, normalized, 0, pointer);
 }
 
-void draw(AAssetManager* pAssetManager, int draw_limit, int frame_limit)
-{
-    int draw_count = 0;
-    int frame_count = 0;
-    #include "../../_out/trace.inc"
-}
+#include "../../_out/trace.inc"
