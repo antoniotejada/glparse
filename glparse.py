@@ -315,11 +315,11 @@ def main():
     ##trace = xopen(r"_out\contactsShowcaseAnimation.gltrace.gz", "rb")
     ##trace = xopen(r"_out\bmk_hw_layer.gltrace.gz", "rb")
     ##trace = xopen("_out/bmk_bitmap.gltrace.gz", "rb")
-    ##trace = xopen("_out/kipo.gltrace.gz", "rb")
+    trace = xopen("_out/kipo.gltrace.gz", "rb")
     ##trace = xopen("_out/gl2morphcubeva.gltrace.gz", "rb")
     ##trace = xopen("_out/kipo-full.gltrace", "rb")
     ##trace = xopen(r"_out\otter.gltrace.gz", "rb")
-    trace = xopen("_out/GTAVC.gltrace.gz", "rb")
+    ##trace = xopen("_out/GTAVC.gltrace.gz", "rb")
 
     # Every argument can be optionally translated using a translation table
     # Each translation table contains:
@@ -489,7 +489,7 @@ def main():
     #
 
     max_frame_count = sys.maxint
-    ##max_frame_count = 200
+    ##max_frame_count = 10
     # This can be disabled to save ~5s of time
     # XXX This needs fixing so it doesn't use global tables with enums that gles2
     #     doesn't have
@@ -791,7 +791,7 @@ def main():
             # passed in with existing float contents
             # This is used for glUniformMatrix4fv, etc
             if ((len(arg.floatValue) > 0) and (arg.isArray)):
-                arg_name = "ptr%d" % allocated_vars
+                arg_name = "local_ptr%d" % allocated_vars
                 allocated_vars += 1
                 preamble_strings.append("const float %s[] = { %s }" % (
                     arg_name,
@@ -803,7 +803,7 @@ def main():
             # Note isArray is set to False above when NULLing textures, so ignore
             # those
             elif ((len(arg.rawBytes) > 0) and (arg.isArray)):
-                arg_name = "ptr%d" % allocated_vars
+                arg_name = "local_ptr%d" % allocated_vars
                 allocated_vars += 1
                 args_strings.append(arg_name)
                 if (function_name == "glVertexAttribPointerData"):
@@ -826,7 +826,8 @@ def main():
             # than zero
             elif ((arg.isArray) and ((len(arg.intValue) > 0) or (len(arg.boolValue) > 0) or
                     len(arg.charValue) > 0)):
-                var_name = "var%d" % allocated_vars
+                global_var_name = "var%d" % allocated_vars
+                var_name = "local_%s" % global_var_name
                 allocated_vars += 1
                 # XXX Missing initializers for all but charvalue?
                 if (len(arg.boolValue) > 0):
@@ -846,6 +847,8 @@ def main():
                         # This is used for eg texture ids, so it needs to preserve
                         # the data across invocations
                         # XXX Where else is static needed?
+                        # Remove the local prefix
+                        var_name = global_var_name
                         global_decls.append("static GLint %s[%d] = {%s}" %
                                     (var_name , len(arg.intValue),
                                      string.join([str(i) for i in arg.intValue], ", ")))
@@ -859,7 +862,7 @@ def main():
                 # special case of glSetShaderSource, in which case we need
                 # a pointer to pointer to const chars (const qualifier is not
                 # ignored across pointers)
-                arg_name = "var%d" % allocated_vars
+                arg_name = "local_var%d" % allocated_vars
                 allocated_vars += 1
                 if ("\n" in arg.charValue[0]):
                     initializer = '"\\\n  %s\\n"' % arg.charValue[0].replace("\n", "\\\n  ")

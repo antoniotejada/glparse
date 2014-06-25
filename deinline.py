@@ -80,15 +80,16 @@ logger = logging.getLogger(__name__)
 
 # The code is an array of arrays of strings, the first argument of each line is
 # the function name, subsquent items are the arguments
-frames = []
-frame = []
 def main():
     LOG_LEVEL=logging.DEBUG
     logger.setLevel(LOG_LEVEL)
     logger.info("Starting")
 
     load_frames = True
+    frames = sample_frames
     if (load_frames):
+        frames = []
+
         # Read the code
         # XXX Quick hack the parser should probably be more robust, or the
         #     code should be given already parsed
@@ -168,8 +169,10 @@ def main():
     function_to_char = {}
     char_to_function = {}
     frame_strings = []
+    frame_parameters = []
     for frame in frames:
         this_frame_string = []
+        this_frame_parameters = []
         for line in frame:
             function_name = line[0]
             try:
@@ -179,15 +182,26 @@ def main():
                 function_to_char[function_name] = function_char
                 char_to_function[function_char] = function_name
             this_frame_string.append(function_char)
+            this_frame_parameters.append(line[1:])
 
         this_frame_string = string.join(this_frame_string, "")
         frame_strings.append(this_frame_string)
+        frame_parameters.append(this_frame_parameters)
 
     logger.info("Initial code lines: %d" % sum([len(s) for s in frame_strings]))
+
+    for (frame_index, frame_string) in enumerate(frame_strings):
+        print "void frame%d()" % frame_index
+        print "{"
+        for c_index, c in enumerate(frame_string):
+                print "    %s(%s)" % (char_to_function[c], string.join(frame_parameters[frame_index][c_index], ", "))
+        print "}"
 
     # XXX We don't need to rebuild the histogram from scratch on every
     #     iteration, we should be able to go to the functions that contained
     #     the best substring and do a partial update of those
+    #     But not that that requires going through the old code and removing all
+    #     substrings and setting to zero the histogram for the best substring
     for k in range(100):
 
         # Find the number of occurrences of each possible substring
@@ -201,10 +215,10 @@ def main():
         logger.debug("Building histogram")
         for (frame_index, frame_string) in enumerate(frame_strings):
             frame_string_len = len(frame_string)
-            for substring_length in xrange(min_substring_length, frame_string_len):
+            for substring_length in xrange(min_substring_length, frame_string_len + 1):
                 substring_prev_start = {}
                 # Iterate through all the substrings of length substring_length
-                for i in xrange(0, frame_string_len - substring_length):
+                for i in xrange(0, frame_string_len - substring_length + 1):
                     substring = frame_string[i:i+substring_length]
                     try:
                         # If this is already in the histogram, increment if this substring
@@ -247,82 +261,118 @@ def main():
             logger.debug("No worthy compression found")
             break
 
-        print repr(best_substring_and_count[0]), best_substring_and_count[1], len(best_substring_and_count[0])
-
-        print "void fn%d()" % k
-        print "{"
-        for c in best_substring_and_count[0]:
-            print "    %s" % char_to_function[c]
-        print "}"
-        print
+#        print repr(best_substring_and_count[0]), best_substring_and_count[1], len(best_substring_and_count[0])
+#
+#        print "void fn%d()" % k
+#        print "{"
+#        for c in best_substring_and_count[0]:
+#            print "    %s" % char_to_function[c]
+#        print "}"
+#        print
 
         # Convert the best substring into a new function and update
         # the necessary tables
         logger.debug("Converting best substring into a new function")
 
-        # Remove the best substring from the function strings by replacing it
-        # with a new function
+        #
+        # Remove each occurrence of the best substring from the function strings
+        # by replacing it with a new function
+        #
         best_substring_len = len(best_substring_and_count[0])
         char_to_function_len = len(char_to_function)
         # XXX Use some better name, store the names in another dict
-        best_substring_function_name = "frame%d" % len(frame_strings)
+        best_substring_frame_index = len(frame_strings)
+        best_substring_function_name = "frame%d" % best_substring_frame_index
         best_substring_function_char = unichr(char_to_function_len)
         char_to_function[best_substring_function_char] = best_substring_function_name
         function_to_char[best_substring_function_name] = best_substring_function_char
 
+        all_actual_parameters = []
+        common_parameters = []
+        best_substring_parameters = None
         for (frame_index, frame_string) in enumerate(frame_strings):
             i = 0
             frame_string_len = len(frame_string)
             new_frame_string = []
+            new_frame_parameters = []
+            old_frame_parameters = frame_parameters[frame_index]
             while (i < frame_string_len):
                 if ((i + best_substring_len > frame_string_len) or
                     (best_substring_and_count[0] != frame_string[i:best_substring_len+i])):
                     new_frame_string.append(frame_string[i])
+                    new_frame_parameters.append(old_frame_parameters[i])
                     i += 1
                 else:
+                    # Initially the function takes as parameters each parameter
+                    # of each function in the code being replaced, this will
+                    # be optimized below to remove the common parameters
+                    best_substring_parameters = old_frame_parameters[i:best_substring_len+i]
+                    actual_parameters = [param for params in best_substring_parameters for param in params]
+                    new_frame_parameters.append(actual_parameters)
+                    # Keep a reference to those so we can remove the common parameters
+                    all_actual_parameters.append(actual_parameters)
+
+                    # Remove any unmatching parameters from the common parameters
+                    for param_index, param in enumerate(actual_parameters):
+                        try:
+                            if (common_parameters[param_index] != param):
+                                common_parameters[param_index] = None
+                        except IndexError:
+                            common_parameters.append(param)
+
                     new_frame_string.append(unichr(char_to_function_len))
+
                     i += best_substring_len
 
             frame_strings[frame_index] = string.join(new_frame_string, "")
+            frame_parameters[frame_index] = new_frame_parameters
 
+        # Go through all the actual parameters, remove the common parameters
+        # from them
+        # XXX Also think about coalescing different parameters with a single value
+        #     into a single parameter (as long as also has a single value in all
+        #     the other invocations)
+        for actual_parameters in all_actual_parameters:
+            removed_params = 0
+            assert(len(actual_parameters) == len(common_parameters))
+            for param_index, param in enumerate(common_parameters):
+                # Note that local variables still need to be passed as parameters
+                # even if they are common to all callers
+                if ((param is not None) and (not param.startswith("local_"))):
+                    del actual_parameters[param_index - removed_params]
+                    removed_params += 1
+
+        # XXX Update the function prototype to use parameters, needs somewhere
+        #     to keep them
         frame_strings.append(best_substring_and_count[0])
+        # Update the function body to use formal parameters for the non-common
+        # actual parameters
+        param_flat_index = 0
+        formal_param_index = 0
+        frame_parameters.append([])
+        for params in best_substring_parameters:
+            for param_index, param in enumerate(params):
+                # If this parameter is not common, swap it with a formal parameter
+                if (common_parameters[param_flat_index] is None):
+                    # Prefix the parameter name with local_ so any code using it
+                    # is never regarded as a common parameter and always passed
+                    # as formal parameter
+                    params[param_index] = "local_param_%d" % formal_param_index
+                    formal_param_index += 1
+                param_flat_index += 1
+            frame_parameters[best_substring_frame_index].append(params)
 
     # Print the new code
     for (frame_index, frame_string) in enumerate(frame_strings):
         print "void frame%d()" % frame_index
         print "{"
-        for c in frame_string:
-            print "    %s" % char_to_function[c]
+        for c_index, c in enumerate(frame_string):
+                print "    %s(%s)" % (char_to_function[c], string.join(frame_parameters[frame_index][c_index], ", "))
         print "}"
 
     logger.info("Final code lines: %d" % sum([len(s) for s in frame_strings]))
 
-
-#    substrings = []
-#    for frame in frames:
-#
-#        # Collect all the substrings of this frame
-#        this_frame_substrings =
-#        min_substring_length = 4
-#        for length in xrange(min_substring_length, len(frame)):
-#
-#
-#        # Start with substrings of len N, down to K
-#        # (don't bother with small substrings?)
-#        for
-#
-#        # Substrings of
-#        # Sort them by length
-#
-#        # Find the substring that has the best compression ratio
-#        # XXX Not necessarily the longest substring?
-
-    # XXX Remove and inline parameters that are constant same across all
-    #     invocations
-
-    # Insert new functions instead of the code and try again
-
-frames = [
+sample_frames = [
     [
         ['glGetIntegerv', 'GL_MAX_TEXTURE_SIZE', 'var0'],
         ['glGetIntegerv', 'GL_MAX_TEXTURE_SIZE', 'var1'],
