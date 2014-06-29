@@ -8,6 +8,12 @@ python -O glparse.py > _out\trace.inc 2> _out\trace.log
 
 if ERRORLEVEL 1 GOTO ERROR
 
+REM Generate the deinlined file
+REM python -O deinline.py > _out\trace2.inc 2> _out\trace2.log
+copy /Y _out\trace.inc _out\trace2.inc
+
+if ERRORLEVEL 1 GOTO ERROR
+
 REM Build the ndk project
 call ndk-build.bat
 

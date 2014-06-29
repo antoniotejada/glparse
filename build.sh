@@ -1,13 +1,20 @@
-# Generate the trace.inc file
-echo Generating trace.inc file
 
 # Delete temporaries
 rm -rf _out/assets
 rm _out/trace.inc
+rm _out/trace2.inc
 rm _out/trace.log
+rm _out/trace2.log
 mkdir _out/assets
 
-./glparse.py > _out/trace.inc 2> _out/trace.log
+
+# Generate the trace.inc file
+echo Generating trace.inc file
+python -O glparse.py > _out/trace.inc 2> _out/trace.log
+
+# echo De-inlining trace
+# python -O deinline.py > _out/trace2.inc 2> _out/trace2.log
+cp _out/trace.inc _out/trace2.inc
 
 echo Building NDK project
 # Build the NDK project
@@ -39,13 +46,15 @@ PATH=$PATH:~/adt-bundle-linux-x86_64/sdk/tools/
 # The target to use can be known via "android list targets"
 # XXX Should we just "android create project" and check-in those files?
 android update project --path ./activity --name NativeActivity --target 1
-pushd
-# Linux ant doesn't work when invoking from a different directory, switch to the
-# directory
+# Linux ant fails with Unexpected element "{}manifest"  when passing -buildfile,
+# switch to activity the directory and invoke with no parameters
 cd activity
-ant -buildfile AndroidManifest.xml -lib ../_out/libs debug
-popd
+ant -lib ../_out/libs debug
+cd ..
 
+# Make sure we uninstall the activity to prevent certificate issues when installing
+# over old versions or compiled on other machines
+adb shell pm uninstall com.example.native_activity
 adb install -r _out/bin/NativeActivity-debug.apk
 adb logcat -c
 adb shell am start -n com.example.native_activity/android.app.NativeActivity

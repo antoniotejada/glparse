@@ -53,6 +53,10 @@
 #define GL_TEXTURE_SWIZZLE_RGBA           0x8E46
 #endif
 
+#ifndef GL_RGBA8
+#define GL_RGBA8 0x8058
+#endif
+
 
 GL_APICALL void GL_APIENTRY glStartTilingQCOM (GLuint x, GLuint y, GLuint width, GLuint height, GLbitfield preserveMask)
 {
@@ -63,16 +67,46 @@ GL_APICALL void GL_APIENTRY glEndTilingQCOM (GLbitfield preserveMask)
 
 }
 
-AAsset* openAsset(AAssetManager* pAssetManager, const char* filename)
+int openAsset(AAssetManager* pAssetManager, const char* filename, AAsset** ppAsset)
 {
-    AAsset* pAsset = AAssetManager_open(pAssetManager, filename, AASSET_MODE_BUFFER);
+    int ret = 0;
 
-    if (pAsset == NULL)
+    *ppAsset = AAssetManager_open(pAssetManager, filename, AASSET_MODE_BUFFER);
+    if (*ppAsset == NULL)
     {
         LOGW("Unable to open asset %s", filename);
+
+        ret = -1;
     }
 
-    return pAsset;
+    return ret;
+}
+
+int getAssetBuffer(AAsset* pAsset, const void** ppBuffer)
+{
+    int ret = 0;
+
+    *ppBuffer = AAsset_getBuffer(pAsset);
+    if (*ppBuffer == NULL)
+    {
+        LOGW("Unable to get buffer for asset %p", pAsset);
+
+        ret = -1;
+    }
+
+    return ret;
+}
+
+int openAndGetAssetBuffer(AAssetManager* pAssetManager, const char* filename, AAsset** ppAsset, const void** ppBuffer)
+{
+    int ret = 0;
+    ret = openAsset(pAssetManager, filename, ppAsset);
+    if (ret == 0)
+    {
+        ret = getAssetBuffer(*ppAsset, ppBuffer);
+    }
+
+    return ret;
 }
 
 void closeAsset(AAsset* pAsset)
@@ -115,4 +149,4 @@ void glVertexAttribPointerData(GLuint index,  GLint size,  GLenum type,  GLboole
     glVertexAttribPointer(index, size, type, normalized, 0, pointer);
 }
 
-#include "../../_out/trace.inc"
+#include "../../_out/trace2.inc"

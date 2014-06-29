@@ -272,9 +272,12 @@ def update_translation_machinery_from_xml(translation_tables, translation_lookup
 
     logger.info("Updated translation machinery")
 
-allocated_assets = set()
+# Number of temporary variables that have been allocated, we need this
+# so we don't generate a variable with the same name twice
+num_allocated_vars = 0
 
-def allocate_asset(asset_buffer_ptr, asset_variable_ptr, asset_bytes, global_decls):
+allocated_assets = set()
+def allocate_asset(asset_buffer_ptr, asset_filename, asset_buffer_ptr_type, asset_variable_ptr, asset_bytes, global_decls):
     """!
     Register the given asset and unregister
     """
@@ -289,12 +292,27 @@ def allocate_asset(asset_buffer_ptr, asset_variable_ptr, asset_bytes, global_dec
     allocated_assets.add(asset_variable_ptr)
 
     # Save the asset to a file
-    with open("_out/assets/%s" % asset_buffer_ptr, "wb") as f:
+    with open("_out/assets/%s" % asset_filename, "wb") as f:
         f.write(asset_bytes)
 
     # Generate the instructions to load that asset
-    code.extend(['%s = openAsset(pAssetManager, "%s")' % ( asset_variable_ptr, asset_buffer_ptr),
-                 'const unsigned int* %s = (const unsigned int*) AAsset_getBuffer(%s)' % (asset_buffer_ptr, asset_variable_ptr)])
+    # XXX Change the asset manager to global so it makes deinlining less verbose?
+    #     (less parameters).
+    # XXX Note we use openAndGetAssetBuffer to simplify the code deinlining, as
+    #     otherwise there can be aliasing problems as follows:
+    #       openAsset(pMgr, "filename", &pAsset)
+    #       getAssetBuffer(pAsset,
+    #     is deinlined as
+    #       void subframe(pMgr, &pAsset, param_AAsset_ptr, param_AAsset_ptr_ptr)
+    #           openAsset(pMgr, "filename", param_AAsset_ptr_ptr)
+    #           getAssetBuffer(param_AAsset_ptr
+    #     Note how getAssetBuffer calls using a temporary variable that is no
+    #     longer updated by the call to openAsset
+    #     This could be solved by taking aliasing into account when removing
+    #     redundant parameters.
+    code.append('openAndGetAssetBuffer(%s, "%s", &%s, (const void**) &%s)' %
+                ("param_AAssetManager_ptr_0", asset_filename, asset_variable_ptr,
+                 asset_buffer_ptr))
 
     return code
 
@@ -305,6 +323,8 @@ def free_asset(asset_variable_ptr):
             "%s = NULL" % asset_variable_ptr]
 
 def main():
+    global num_allocated_vars
+
     LOG_LEVEL=logging.INFO
 
     logger.setLevel(LOG_LEVEL)
@@ -315,11 +335,12 @@ def main():
     ##trace = xopen(r"_out\contactsShowcaseAnimation.gltrace.gz", "rb")
     ##trace = xopen(r"_out\bmk_hw_layer.gltrace.gz", "rb")
     ##trace = xopen("_out/bmk_bitmap.gltrace.gz", "rb")
-    trace = xopen("_out/kipo.gltrace.gz", "rb")
+    ##trace = xopen("_out/kipo.gltrace.gz", "rb")
     ##trace = xopen("_out/gl2morphcubeva.gltrace.gz", "rb")
     ##trace = xopen("_out/kipo-full.gltrace", "rb")
     ##trace = xopen(r"_out\otter.gltrace.gz", "rb")
-    ##trace = xopen("_out/GTAVC.gltrace.gz", "rb")
+    trace = xopen("_out/GTAVC.gltrace.gz", "rb")
+    ##trace = xopen("_out/venezia.gltrace.gz", "rb")
 
     # Every argument can be optionally translated using a translation table
     # Each translation table contains:
@@ -366,7 +387,7 @@ def main():
         # Insertions to the current context
         "glGenBuffers"      : { 1 : { "field" : "intValue", "table" : "buffers"      }},
         "glGenFramebuffers" : { 1 : { "field" : "intValue", "table" : "framebuffers" }},
-        "glGenRenderBuffers": { 1 : { "field" : "intValue", "table" : "renderbuffers"}},
+        "glGenRenderbuffers": { 1 : { "field" : "intValue", "table" : "renderbuffers"}},
         "glGenTextures"     : { 1 : { "field" : "intValue", "table" : "textures"     }},
 
 
@@ -401,8 +422,8 @@ def main():
 
         "glBindAttribLocation": { 0: { "field" : "intValue", "table" : "programs"    }},
         "glBindBuffer"      : { 1 : { "field" : "intValue", "table" : "buffers"      }},
-        "glBindFrameBuffer" : { 1 : { "field" : "intValue", "table" : "framebuffers" }},
-        "glBindRenderBuffer" : { 1 : { "field" : "intValue", "table" : "renderbuffers" }},
+        "glBindFramebuffer" : { 1 : { "field" : "intValue", "table" : "framebuffers" }},
+        "glBindRenderbuffer" : { 1 : { "field" : "intValue", "table" : "renderbuffers" }},
         "glBindTexture"     : { 1 : { "field" : "intValue", "table" : "textures"     }},
 
         "glCompileShader"   : { 0 : { "field" : "intValue", "table" : "shaders"      }},
@@ -489,26 +510,30 @@ def main():
     #
 
     max_frame_count = sys.maxint
-    ##max_frame_count = 10
+    max_frame_count = 100
     # This can be disabled to save ~5s of time
     # XXX This needs fixing so it doesn't use global tables with enums that gles2
     #     doesn't have
     use_human_friendly_gl_enums = True
+    use_assets_for_shaders = True
+    use_assets_for_floats = True
     generate_empty_textures = False
     insert_glfinish_after_gl_functions = False
     insert_alog_after_gl_functions = False
+    gl_contexts_to_trace = [1]
     if (use_human_friendly_gl_enums):
         update_translation_machinery_from_xml(translation_tables, translation_lookups)
 
-    # Number of temporary variables that have been allocated, we need this
-    # so we don't generate a variable with the same name twice
-    allocated_vars = 0
     current_state = { 'program' : None, 'context' : None }
     frame_count = 0
     function_enum_type = gltrace_pb2.GLMessage.DESCRIPTOR.enum_types_by_name['Function']
     code = []
     code_frames = [code]
     global_decls = []
+    # Add the global declarations for the temporary asset buffer pointers
+    global_decls.append("const GLfloat* global_const_float_ptr_0")
+    global_decls.append("const GLchar* global_const_char_ptr_0")
+    global_decls.append("const GLint* global_const_int_ptr_0")
     while True:
         buffer_length = trace.read(4)
         if (buffer_length == ""):
@@ -523,33 +548,25 @@ def main():
 
         logger.debug("Found function %s" % function_name)
 
+        if (msg.context_id not in gl_contexts_to_trace):
+            logger.warning("Ignoring function %s for ignored context %d" %
+                (function_name, msg.context_id))
+            continue
+
         # Append to the frames and check if this is the final frame
         if (function_name == "eglSwapBuffers"):
             code = []
-            code_frames.append(code)
             frame_count += 1
-            if (frame_count > max_frame_count):
+            if (frame_count >= max_frame_count):
                 break
-
-        # Do translation machinery context in/out
-        # This could be parameterized in tables, but only two functions cause
-        # switches so it's not worth it
-        if (function_name == "glUseProgram"):
-            # Copy this program's uniforms to the active uniforms
-            # Note this copies the reference, so inserting in 'uniforms' is enough
-            # to update both
-            table_name = "uniforms_%d" % msg.args[0].intValue[0]
-            try:
-                current_uniforms = translation_tables[table_name]
-            except:
-                current_uniforms = {}
-                translation_tables[table_name] = current_uniforms
-
-            translation_tables['current_uniforms'] = current_uniforms
-
-            logger.debug("Switched current uniforms to %s" % table_name)
+            # Note a reference is appended, so processing an eglSwapBuffers is
+            # not necessary to complete this frame
+            code_frames.append(code)
 
         if (function_name == "eglMakeCurrent"):
+            # XXX Disable for now
+            continue
+
             # XXX This needs to evict the program-specific tables like uniforms_NNN
             tables_to_evict = [ 'attribs', 'uniforms', 'current_uniforms', 'textures', 'shaders', 'programs', 'buffers', 'framebuffers' ]
             current_field_name = 'context'
@@ -610,13 +627,32 @@ def main():
             (function_name == "eglSwapBuffers")):
             continue
 
-        if (function_name in ["glVertexAttrib1fv",
-                              "glVertexAttrib2fv",
-                              "glVertexAttrib3fv",
-                              "glVertexAttrib4fv"]):
+        if ((function_name in ["glVertexAttrib1fv",
+                               "glVertexAttrib2fv",
+                               "glVertexAttrib3fv",
+                               "glVertexAttrib4fv"]) and not msg.args[1].isArray):
             # WAR glVertexAttrib4fv doesn't provide data, ignore it
-            logger.debug("Ignoring glVertexAttribNv function as the trace doesn't provide the value")
+            logger.warning("Ignoring glVertexAttribNv function as the trace doesn't provide the value")
+            logger.debug(msg)
             continue
+
+        # Do translation machinery context in/out
+        # This could be parameterized in tables, but only two functions cause
+        # switches so it's not worth it
+        if (function_name == "glUseProgram"):
+            # Copy this program's uniforms to the active uniforms
+            # Note this copies the reference, so inserting in 'uniforms' is enough
+            # to update both
+            table_name = "uniforms_%d" % msg.args[0].intValue[0]
+            try:
+                current_uniforms = translation_tables[table_name]
+            except:
+                current_uniforms = {}
+                translation_tables[table_name] = current_uniforms
+
+            translation_tables['current_uniforms'] = current_uniforms
+
+            logger.debug("Switched current uniforms to %s" % table_name)
 
         args_strings = []
         preamble_strings = []
@@ -728,8 +764,15 @@ def main():
                 # to empty to prevent access violations when accessing stale pointers
                 if ((not generate_empty_textures) and
                     ((len(arg.rawBytes) == 0) and (arg.intValue[0] != 0))):
-                    logger.warning("Trace doesn't contain texture data, forcing all textures to empty")
-                    generate_empty_textures = True
+                    logger.warning("Trace doesn't contain texture data for %s, forcing texture to empty" %
+                        function_name)
+                    logger.debug(msg)
+                    # Don't just set generate_empty_textures, as some traces have
+                    # normal texture data but not compressed data
+                    arg.type = gltrace_pb2.GLMessage.DataType.VOID
+                    arg.isArray = False
+                    arg.intValue[0] = 0
+
 
                 if (generate_empty_textures):
                     # Set the texture pointer to NULL
@@ -791,28 +834,51 @@ def main():
             # passed in with existing float contents
             # This is used for glUniformMatrix4fv, etc
             if ((len(arg.floatValue) > 0) and (arg.isArray)):
-                arg_name = "local_ptr%d" % allocated_vars
-                allocated_vars += 1
-                preamble_strings.append("const float %s[] = { %s }" % (
-                    arg_name,
-                    string.join([str(f) for f in arg.floatValue], ", ")))
+                if (use_assets_for_floats):
+                    arg_name = "global_const_float_ptr_0"
+                    asset_filename = "float_asset_%d" % num_allocated_vars
+                    preamble_strings.extend(allocate_asset(arg_name,
+                                                           asset_filename,
+                                                           "const float*",
+                                                           "global_AAsset_ptr_0",
+                                                           string.join([struct.pack("f", f) for f in arg.floatValue],""),
+                                                           global_decls))
+
+                else:
+                    # XXX Change this to use the global pointer?
+                    arg_name = "local_float_ptr_%d" % num_allocated_vars
+                    preamble_strings.append("const float %s[] = { %s }" % (
+                        arg_name,
+                        string.join([str(f) for f in arg.floatValue], ", ")))
                 args_strings.append(arg_name)
+                num_allocated_vars += 1
 
             # When rawbytes is set, initialized data is passed in
             # (glTexSubImage2D, glTexImage2D with BYTE, glBufferData with VOID, etc)
             # Note isArray is set to False above when NULLing textures, so ignore
             # those
             elif ((len(arg.rawBytes) > 0) and (arg.isArray)):
-                arg_name = "local_ptr%d" % allocated_vars
-                allocated_vars += 1
+                asset_filename = "int_asset_%d" % num_allocated_vars
+                arg_name = "global_const_int_ptr_0"
                 args_strings.append(arg_name)
+                num_allocated_vars += 1
                 if (function_name == "glVertexAttribPointerData"):
-                    preamble_strings.extend(allocate_asset(arg_name, "pAsset%d" % msg.args[0].intValue[0], arg.rawBytes[0], global_decls))
+                    preamble_strings.extend(allocate_asset(arg_name,
+                                                           asset_filename,
+                                                           "const unsigned int*",
+                                                           "global_AAsset_ptr_%d" % (msg.args[0].intValue[0]+1),
+                                                           arg.rawBytes[0],
+                                                           global_decls))
                     # The asset will be freed when it's allocated again with
                     # that name
                     # XXX Need to free the assets at the end of the trace
                 else:
-                    preamble_strings.extend(allocate_asset(arg_name, "pAsset", arg.rawBytes[0], global_decls))
+                    preamble_strings.extend(allocate_asset(arg_name,
+                                                           asset_filename,
+                                                           "const unsigned int*",
+                                                           "global_AAsset_ptr_0",
+                                                           arg.rawBytes[0],
+                                                           global_decls))
                     # This is a short-lived asset only used in this GL call, could
                     # be freed after the call, but that complicates the asset
                     # variable declaration, so we just free it the next time
@@ -826,13 +892,13 @@ def main():
             # than zero
             elif ((arg.isArray) and ((len(arg.intValue) > 0) or (len(arg.boolValue) > 0) or
                     len(arg.charValue) > 0)):
-                global_var_name = "var%d" % allocated_vars
-                var_name = "local_%s" % global_var_name
-                allocated_vars += 1
+
                 # XXX Missing initializers for all but charvalue?
                 if (len(arg.boolValue) > 0):
+                    var_name = "local_boolean_ptr_%d" % num_allocated_vars
                     preamble_strings.append("GLboolean %s[%d]" % (var_name , len(arg.boolValue)))
                 elif (len(arg.charValue) > 0):
+                    var_name = "local_char_ptr_%d" % num_allocated_vars
                     if ("\n" in arg.charValue[0]):
                         initializer = '"\\\n  %s\\n"' % arg.charValue[0].replace("\n", "\\\n  ")
                     else:
@@ -840,6 +906,7 @@ def main():
                     preamble_strings.append("GLchar %s[] = %s" % (var_name, initializer))
                 elif (len(arg.intValue) > 0):
                     if (arg.type == gltrace_pb2.GLMessage.DataType.VOID):
+                        var_name = "local_void_ptr_%d" % num_allocated_vars
                         # the parser patches some pointers to void from INTs to
                         # VOID
                         preamble_strings.append("GLvoid* %s[1]" % var_name)
@@ -848,11 +915,12 @@ def main():
                         # the data across invocations
                         # XXX Where else is static needed?
                         # Remove the local prefix
-                        var_name = global_var_name
+                        var_name = "global_int_ptr_%d" % num_allocated_vars
                         global_decls.append("static GLint %s[%d] = {%s}" %
                                     (var_name , len(arg.intValue),
                                      string.join([str(i) for i in arg.intValue], ", ")))
                 args_strings.append(var_name)
+                num_allocated_vars += 1
 
             elif (arg.isArray):
                 raise Exception("unhandled array argument %s for %s" % (arg, msg))
@@ -862,16 +930,33 @@ def main():
                 # special case of glSetShaderSource, in which case we need
                 # a pointer to pointer to const chars (const qualifier is not
                 # ignored across pointers)
-                arg_name = "local_var%d" % allocated_vars
-                allocated_vars += 1
-                if ("\n" in arg.charValue[0]):
-                    initializer = '"\\\n  %s\\n"' % arg.charValue[0].replace("\n", "\\\n  ")
+                if (use_assets_for_shaders):
+                    asset_filename = "char_asset_%d" % num_allocated_vars
+                    arg_name = "global_const_char_ptr_0"
+                    # Note we zero-terminate the string as required by
+                    # glSetShaderSource when length is NULL
+                    preamble_strings.extend(allocate_asset(arg_name,
+                                                           asset_filename,
+                                                           "GLchar const *",
+                                                           "global_AAsset_ptr_0",
+                                                           arg.charValue[0] + "\0",
+                                                           global_decls))
+                    # glSetShaderSource requires a pointer to pointer
+                    arg_name = "&%s" % arg_name
                 else:
-                    initializer = '"%s"' % arg.charValue[0]
-                preamble_strings.append("const GLchar* %s[] = {%s} " % (
-                    arg_name,
-                    initializer))
+                    # XXX Change this to use the global pointer?
+                    arg_name = "local_char_ptr_%d" % num_allocated_vars
+                    if ("\n" in arg.charValue[0]):
+                        initializer = '"\\\n  %s\\n"' % arg.charValue[0].replace("\n", "\\\n  ")
+                    else:
+                        initializer = '"%s"' % arg.charValue[0]
+
+                    preamble_strings.append("const GLchar* %s[] = {%s} " % (
+                        arg_name,
+                        initializer))
+
                 args_strings.append(arg_name)
+                num_allocated_vars += 1
 
             elif (len(arg.intValue) > 0):
                 # XXX Don't hard-code this only to intValues
@@ -957,8 +1042,8 @@ def main():
             value = values[0]
 
             # Create a new variable to hold the return value
-            var_name = "var%d" % allocated_vars
-            allocated_vars += 1
+            var_name = "global_unsigned_int_%d" % num_allocated_vars
+            num_allocated_vars += 1
             global_decls.append("static unsigned int %s" % var_name)
 
             table[value] = var_name
@@ -992,20 +1077,20 @@ def main():
 
     # Generate each frame
     for (frame_count, code) in enumerate(code_frames):
-        print "void frame%s(AAssetManager* pAssetManager)" % frame_count
+        print "void frame%s(AAssetManager* param_AAssetManager_ptr_0)" % frame_count
         print "{"
         for line in code:
             print "    %s;" % line
         print "}"
 
     # Generate the code that calls each frame
-    print "void draw(AAssetManager* pAssetManager, int draw_limit, int frame_limit)"
+    print "void draw(AAssetManager* param_AAssetManager_ptr_0, int draw_limit, int frame_limit)"
     print "{"
     print "    switch (frame_limit)"
     print "    {"
-    for frame in range(frame_count):
-        print "        case %d: " % frame
-        print "            frame%d(pAssetManager);" % frame
+    for frame_index in xrange(len(code_frames)):
+        print "        case %d: " % frame_index
+        print "            frame%d(param_AAssetManager_ptr_0);" % frame_index
         print "        break;"
     print "        default: "
     print '            LOGI("Ignoring inexistent frame %d", frame_limit);'

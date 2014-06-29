@@ -154,7 +154,7 @@ static int engine_init_display(struct engine* engine) {
 
 int draw_limit = 0;
 int frame_limit = 0;
-int stop_motion = FALSE;
+int stop_motion = TRUE;
 void draw(AAssetManager* pAssetManager, int draw_limit, int frame_limit);
 
 /**
