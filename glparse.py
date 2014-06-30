@@ -335,11 +335,11 @@ def main():
     ##trace = xopen(r"_out\contactsShowcaseAnimation.gltrace.gz", "rb")
     ##trace = xopen(r"_out\bmk_hw_layer.gltrace.gz", "rb")
     ##trace = xopen("_out/bmk_bitmap.gltrace.gz", "rb")
-    ##trace = xopen("_out/kipo.gltrace.gz", "rb")
+    trace = xopen("_out/kipo.gltrace.gz", "rb")
     ##trace = xopen("_out/gl2morphcubeva.gltrace.gz", "rb")
     ##trace = xopen("_out/kipo-full.gltrace", "rb")
     ##trace = xopen(r"_out\otter.gltrace.gz", "rb")
-    trace = xopen("_out/GTAVC.gltrace.gz", "rb")
+    ##trace = xopen("_out/GTAVC.gltrace.gz", "rb")
     ##trace = xopen("_out/venezia.gltrace.gz", "rb")
 
     # Every argument can be optionally translated using a translation table
@@ -520,9 +520,11 @@ def main():
     generate_empty_textures = False
     insert_glfinish_after_gl_functions = False
     insert_alog_after_gl_functions = False
-    gl_contexts_to_trace = [1]
+    gl_contexts_to_trace = [0]
     if (use_human_friendly_gl_enums):
         update_translation_machinery_from_xml(translation_tables, translation_lookups)
+
+    logger.info("Starting trace parsing")
 
     current_state = { 'program' : None, 'context' : None }
     frame_count = 0
@@ -549,7 +551,7 @@ def main():
         logger.debug("Found function %s" % function_name)
 
         if (msg.context_id not in gl_contexts_to_trace):
-            logger.warning("Ignoring function %s for ignored context %d" %
+            warning("Ignoring function %s for ignored context %d" %
                 (function_name, msg.context_id))
             continue
 
@@ -663,7 +665,9 @@ def main():
 
         for arg_index, arg in enumerate(msg.args):
 
-            logger.debug("Found arg %s" % str(arg))
+            # Converting from tree element to string doubles the execution time,
+            # only do it in debug
+            assert None is logger.debug("Found arg %s" % str(arg))
 
             # Patch wrong functions
             # XXX Use function code rather than function name
@@ -793,10 +797,12 @@ def main():
                 except KeyError:
                     pass
                 # The attribute may not be there
-                logger.debug("Getting field %s" % str(field_name))
+                # Converting from tree element to string doubles the execution time,
+                # only do it in debug
+                assert None is logger.debug("Getting field %s" % str(field_name))
                 value = getattr(arg, field_name)
                 if (len(value) == 0):
-                    logger.error("Unexpected arg %s in function %s" % (str(arg), function_name))
+                    logger.warning("Unexpected arg %s in function %s" % (str(arg), function_name))
                 else:
                     if (field_name == "boolValue"):
                         value = bool(int(value[0]))
@@ -809,7 +815,9 @@ def main():
                     translation_table = translation_tables.get(table_name, {})
                     try:
                         translated_value = translation_table[value]
-                        logger.debug("Translated %s to %s via %s" % (str(value), translated_value, table_name))
+                        # Converting from tree element to string doubles the execution time,
+                        # only do it in debug
+                        assert None is logger.debug("Translated %s to %s via %s" % (str(value), translated_value, table_name))
                     except KeyError:
                         pass
 
@@ -1070,6 +1078,8 @@ def main():
             ## print "if (draw_count == draw_limit) { return; }"
             pass
 
+    logger.info("Writing code")
+
     # Generate the global declarations
     for decl in global_decls:
         print "%s;" % decl
@@ -1097,6 +1107,8 @@ def main():
     print "    }"
     print "}"
     print
+
+    logger.info("Done")
 
 
 if (__name__ == "__main__"):
