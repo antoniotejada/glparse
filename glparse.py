@@ -510,7 +510,7 @@ def main():
     #
 
     max_frame_count = sys.maxint
-    max_frame_count = 100
+    max_frame_count = 200
     # This can be disabled to save ~5s of time
     # XXX This needs fixing so it doesn't use global tables with enums that gles2
     #     doesn't have
@@ -551,7 +551,7 @@ def main():
         logger.debug("Found function %s" % function_name)
 
         if (msg.context_id not in gl_contexts_to_trace):
-            warning("Ignoring function %s for ignored context %d" %
+            logger.warning("Ignoring function %s for ignored context %d" %
                 (function_name, msg.context_id))
             continue
 

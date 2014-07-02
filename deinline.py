@@ -18,9 +18,9 @@
 
 Code deinliner.
 
-Takes a file with one or more functions and deinlines the code (converts most used
-blocks into functions) until the iteration limit is reached or until there is no
-more refactoring worth doing.
+Takes a C file with one or more functions and deinlines the code (refactors by
+converting most used blocks into functions) until the iteration limit is reached
+or until none of the remaining deinlining options will decrease the code size.
 
 The realization is that any sequential code block repeated in several places can
 always be factored out into a function (deinlined), given enough function parameters.
@@ -36,6 +36,14 @@ Limitations:
   make deinlining harder.
 - To ease deinlining, convert assignments into functions and instead of return
   values, use variables passed by reference.
+- To workaround aliasing issues, convert sequences of pointer to pointer variable
+  and that same pointer variable to single function calls.
+  There's a parameter aliasing bug when a deinlined block contains both a pointer
+  written to by reference and that same pointer being used directly afterwards,
+  in that case the pointer will be passed as two different paramters, a pointer
+  to pointer (for the reference) and a plain pointer.
+  Because the plain pointer now lives in the stack, the pointer won't be modified
+  by the pointer to pointer, hence the bug.
 
 Todo/Improvements:
 - More matching can be done if conditionals are introduced, so divergent code is
@@ -50,6 +58,7 @@ Todo/Improvements:
 
 """
 
+import array
 import logging
 import operator
 import re
@@ -259,7 +268,188 @@ def main():
 
                 frame.append([function_name] + function_args)
 
-    LOG_LEVEL=logging.DEBUG
+
+    def build_histogram(substring_histogram, frame_strings):
+        # Don't bother with very short substrings
+        min_substring_length = 2
+        logger.debug("Building histogram")
+        for (frame_index, frame_string) in enumerate(frame_strings):
+            frame_string_len = len(frame_string)
+            for substring_length in xrange(min_substring_length, frame_string_len + 1):
+                # Iterate through all the start positions for the substrings of
+                # length substring_length
+
+                # Keep track of where the previous start position of a given
+                # substring was, which allows discarding overlaps in order to
+                # prevent double-counting when evaluating the compresion ratio.
+
+                # This is reset on every new substring length because:
+                # - overlaps only happen of a block of code with itself (so
+                #   necessarily the code it overlaps with has to have the same
+                #   lengthand content - the content matching part is achieved
+                #   by storing the start for each substring)
+                # - overlap can't happen across frames
+                substring_prev_start = {}
+                for i in xrange(0, frame_string_len - substring_length + 1):
+                    substring = frame_string[i:i+substring_length]
+                    try:
+                        # If this is already in the histogram, increment if this substring
+                        # doesn't overlap another occurrence of itself, so the compression
+                        # factor calculated later doesn't double count
+                        # By construction of the algorithm, the substring will only
+                        # overlap if it starts inside the previous start of this substring
+                        prev_start = substring_prev_start.get(substring, -substring_length)
+                        if (i >= prev_start + substring_length):
+                            substring_histogram[substring] += 1
+                            substring_prev_start[substring] = i
+                    except KeyError:
+                        substring_histogram[substring] = 1
+                        substring_prev_start[substring] = i
+
+    def build_histogram_fast(substring_histogram, frame_strings):
+
+        def find_insertion_point(suffix_array, substring):
+            index = 0
+            min = 0
+            max = len(suffix_array) - 1
+            while True:
+                if (max < min):
+                    return min
+                index = (min + max) // 2
+
+                frame_index_and_start = suffix_array[index]
+
+                this_suffix_frame_index = frame_index_and_start >> 16
+                this_suffix_start = (frame_index_and_start & 0xFFFF)
+
+                r = frame_strings[frame_index_and_start >> 16][frame_index_and_start & 0xFFFF:]
+                comp = cmp(r, substring)
+                if (comp < 0):
+                    min = index  + 1
+                elif (comp > 0):
+                    max = index - 1
+                else:
+                    return index
+
+        def build_suffix_array(suffix_array):
+            for frame_index, frame_string in enumerate(frame_strings):
+                frame_string_length = len(frame_string)
+                for start in xrange(frame_string_length):
+                    assert(frame_index <= 0xFFFF)
+                    assert(start <= 0xFFFF)
+                    # Insert sorted by char
+                    index = find_insertion_point(suffix_array, frame_string[start:])
+
+                    suffix_array.insert(index, (frame_index << 16) | start)
+
+        assert None is logger.debug(frame_strings)
+
+        # Create a suffix array containing the frame the string came from and the
+        # start position of the string, packed in a 32bit value
+        logger.info("Creating suffix array")
+        suffix_array = array.array("L")
+        build_suffix_array(suffix_array)
+
+        if (__debug__):
+            logger.debug(suffix_array)
+            for frame_index_and_start in suffix_array:
+                frame_index = frame_index_and_start >> 16
+                start = frame_index_and_start & 0xFFFF
+                assert None is logger.debug("%s (%d,%d)" % (frame_strings[frame_index][start:], frame_index, start))
+
+        logger.info("Building histogram with suffix array")
+
+        # Find the substring with the largest compression factor
+        #   N = Non overlapped occurrences of the substring
+        #   L = Length of the substring
+        #   factor = N * L - N - L
+        substring_prev_start = [{} for i in range(len(frame_strings))]
+        prev_start_letter = None
+        suffix_array_index = 0
+        for frame_index_and_start in suffix_array:
+            # For every substring, increment the number of occurrences if it doesn't
+            # overlap the previous occurrence
+
+            frame_index = frame_index_and_start >> 16
+            start = frame_index_and_start & 0xFFFF
+            assert None is logger.debug("-- %s (%d,%d) --" % (frame_strings[frame_index][start:], frame_index, start))
+            # XXX If we are switching to another start letter, we can delete all the dicts
+            # XXX This can be done at finer granularity if we keep per-prefix dicts
+
+            try:
+                prev_frame_index_and_start = suffix_array[suffix_array_index - 1]
+                prev_frame_index = prev_frame_index_and_start >> 16
+                prev_start = prev_frame_index_and_start & 0xFFFF
+                prev_suffix_length = len(frame_strings[prev_frame_index])
+                assert None is logger.debug("prev: %d,%d [%d]" % (prev_frame_index, prev_start, prev_suffix_length))
+            except IndexError:
+                prev_suffix_length = 0
+
+            try:
+                next_frame_index_and_start = suffix_array[suffix_array_index + 1]
+                next_frame_index = next_frame_index_and_start >> 16
+                next_start = next_frame_index_and_start & 0xFFFF
+                next_suffix_length = len(frame_strings[next_frame_index])
+                assert None is logger.debug("next: %d,%d [%d]" % (next_frame_index, next_start, next_suffix_length))
+            except IndexError:
+                next_suffix_length = 0
+
+            substring_end = start + 1
+            this_frame_strings_length = len(frame_strings[frame_index])
+            while (substring_end <= this_frame_strings_length):
+                # If this char doesn't match the previous or next suffixes, it
+                # means that this and any larger substrings only match once, so
+                # ignore them, because it's useless to substitute single occurrences
+                # (the compression factor would be negative because of having to
+                # add the function body plus the function call)
+                absolute_index = substring_end - start - 1
+                this_char = frame_strings[frame_index][substring_end - 1]
+                if (((next_start + absolute_index >= next_suffix_length) or
+                     (frame_strings[next_frame_index][next_start + absolute_index] != this_char)) and
+                    ((prev_start + absolute_index >= prev_suffix_length) or
+                     (frame_strings[prev_frame_index][prev_start + absolute_index] != this_char))):
+                    if (__debug__):
+                        logger.debug("Early exiting")
+                        try:
+                            logger.debug("prev is %s vs. %s" % (
+                                frame_strings[prev_frame_index][prev_start + substring_end - start - 1],
+                                frame_strings[frame_index][substring_end-1]))
+
+                        except IndexError:
+                            pass
+
+                        try:
+                            logger.debug("next is %s vs. %s" % (
+                                frame_strings[next_frame_index][next_start + substring_end - start - 1],
+                                frame_strings[frame_index][substring_end-1]))
+
+                        except IndexError:
+                            pass
+                    break
+
+                substring = frame_strings[frame_index][start:substring_end]
+                substring_len = len(substring)
+                try:
+                    # substrings appear from the end first, so this substring has
+                    # to be len before the previous
+                    assert None is logger.debug("%s [%d,%d:]" % (substring, frame_index, start))
+                    prev_start = substring_prev_start[frame_index].get(substring, start + substring_len )
+                    if (abs(start - prev_start) >= substring_len):
+                        substring_histogram[substring] += 1
+                        substring_prev_start[frame_index][substring] = start
+                    else:
+                        assert None is logger.debug("%s [%d:] overlaps [%d:]" % (substring, start, prev_start))
+                except KeyError:
+                    substring_histogram[substring] = 1
+                    substring_prev_start[frame_index][substring] = start
+
+                substring_end += 1
+
+            suffix_array_index += 1
+            logger.debug(substring_histogram)
+
+
+    LOG_LEVEL=logging.INFO
     logger.setLevel(LOG_LEVEL)
     logger.info("Starting")
 
@@ -306,12 +496,21 @@ def main():
 
     logger.info("Initial code lines: %d" % sum([len(s) for s in frame_strings]))
 
+    substring_histogram = {}
+    if (False):
+        frame_strings = [ 'aabaaa', 'cabaaaa', 'aaaabaaaa', 'caaaabaaa', 'caaaabaabb' ]
+        build_histogram(substring_histogram, frame_strings)
+        print substring_histogram
+
+        import sys
+        sys.exit()
+
     # XXX We don't need to rebuild the histogram from scratch on every
     #     iteration, we should be able to go to the functions that contained
     #     the best substring and do a partial update of those
     #     But not that that requires going through the old code and removing all
     #     substrings and setting to zero the histogram for the best substring
-    for k in range(200):
+    for k in range(10):
 
         # Find the number of occurrences of each possible substring
 
@@ -319,41 +518,7 @@ def main():
         # 'substring' : count
         # Keeping the occurrences is necessary so we don't count overlaps
         substring_histogram =  {}
-        # Don't bother with very short substrings
-        min_substring_length = 2
-        logger.debug("Building histogram")
-        for (frame_index, frame_string) in enumerate(frame_strings):
-            frame_string_len = len(frame_string)
-            for substring_length in xrange(min_substring_length, frame_string_len + 1):
-                # Iterate through all the start positions for the substrings of
-                # length substring_length
-
-                # Keep track of where the previous start position of a given
-                # substring was, which allows discarding overlaps in order to
-                # prevent double-counting when evaluating the compresion ratio.
-
-                # This is reset on every new substring length because:
-                # - overlaps only happen of a block of code with itself (so
-                #   necessarily the code it overlaps with has to have the same
-                #   lengthand content - the content matching part is achieved
-                #   by storing the start for each substring)
-                # - overlap can't happen across frames
-                substring_prev_start = {}
-                for i in xrange(0, frame_string_len - substring_length + 1):
-                    substring = frame_string[i:i+substring_length]
-                    try:
-                        # If this is already in the histogram, increment if this substring
-                        # doesn't overlap another occurrence of itself, so the compression
-                        # factor calculated later doesn't double count
-                        # By construction of the algorithm, the substring will only
-                        # overlap if it starts inside the previous start of this substring
-                        prev_start = substring_prev_start.get(substring, -substring_length)
-                        if (i >= prev_start + substring_length):
-                            substring_histogram[substring] += 1
-                            substring_prev_start[substring] = i
-                    except KeyError:
-                        substring_histogram[substring] = 1
-                        substring_prev_start[substring] = i
+        build_histogram(substring_histogram, frame_strings)
 
         # Go through the substring histogram and take the ones with the highest
         # compression ratio
