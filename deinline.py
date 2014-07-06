@@ -286,7 +286,7 @@ def main():
                 # This is reset on every new substring length because:
                 # - overlaps only happen of a block of code with itself (so
                 #   necessarily the code it overlaps with has to have the same
-                #   lengthand content - the content matching part is achieved
+                #   length and content - the content matching part is achieved
                 #   by storing the start for each substring)
                 # - overlap can't happen across frames
                 substring_prev_start = {}
@@ -363,51 +363,94 @@ def main():
         #   N = Non overlapped occurrences of the substring
         #   L = Length of the substring
         #   factor = N * L - N - L
-        substring_prev_start = [{} for i in range(len(frame_strings))]
-        prev_start_letter = None
+        # Given a suffix array split by frame, we can find the substring with the
+        # largest compression factor by walking each character of each entry
+        # of the array
+        # 1. If this character in the previous entry match, increment the count
+        #    for the current unless this is an overlap.
+        # 2. If they don't match, it means that the previous entry was the last
+        #    occurrence of the substring of that length and we can remove it from
+        #    the histogram unless it's the best compression factor
+
+        # Previous start of the substring of length l
+        substring_length_prev_starts = [ [] for i in xrange(len(frame_strings)+1)]
+        # Number of occurrences of the substring of length l
+        substring_length_histogram = [ ]
+        best_substring_and_factor = [ (0,0,0), 0]
         suffix_array_index = 0
+
+        # Setup next suffix information for the first iteration
+        next_frame_index_and_start = suffix_array[0]
+        next_frame_index = next_frame_index_and_start >> 16
+        next_start = next_frame_index_and_start & 0xFFFF
+        next_frame_string_length = len(frame_strings[next_frame_index])
+        # Setup this suffix information for the first iteration
+        frame_index = 0
+        start = 0
+        frame_string_length = 0
+
         for frame_index_and_start in suffix_array:
             # For every substring, increment the number of occurrences if it doesn't
             # overlap the previous occurrence
 
-            frame_index = frame_index_and_start >> 16
-            start = frame_index_and_start & 0xFFFF
-            assert None is logger.debug("-- %s (%d,%d) --" % (frame_strings[frame_index][start:], frame_index, start))
-            # XXX If we are switching to another start letter, we can delete all the dicts
-            # XXX This can be done at finer granularity if we keep per-prefix dicts
+            # Update prev suffix information
+            prev_frame_index = frame_index
+            prev_start = start
+            prev_frame_string_length = frame_string_length
 
-            try:
-                prev_frame_index_and_start = suffix_array[suffix_array_index - 1]
-                prev_frame_index = prev_frame_index_and_start >> 16
-                prev_start = prev_frame_index_and_start & 0xFFFF
-                prev_suffix_length = len(frame_strings[prev_frame_index])
-                assert None is logger.debug("prev: %d,%d [%d]" % (prev_frame_index, prev_start, prev_suffix_length))
-            except IndexError:
-                prev_suffix_length = 0
+            # Update this suffix information
+            frame_index = next_frame_index
+            start = next_start
+            frame_string_length = next_frame_string_length
 
+            # Update next suffix information
             try:
                 next_frame_index_and_start = suffix_array[suffix_array_index + 1]
                 next_frame_index = next_frame_index_and_start >> 16
                 next_start = next_frame_index_and_start & 0xFFFF
-                next_suffix_length = len(frame_strings[next_frame_index])
-                assert None is logger.debug("next: %d,%d [%d]" % (next_frame_index, next_start, next_suffix_length))
+                next_frame_string_length = len(frame_strings[next_frame_index])
             except IndexError:
-                next_suffix_length = 0
+                next_frame_string_length = 0
+
+            assert None is logger.debug("-- %s (%d,%d) --" % (frame_strings[frame_index][start:], frame_index, start))
+            assert None is logger.debug("prev: %d,%d [%d]" % (prev_frame_index, prev_start, prev_frame_string_length))
+            assert None is logger.debug("next: %d,%d [%d]" % (next_frame_index, next_start, next_frame_string_length))
 
             substring_end = start + 1
-            this_frame_strings_length = len(frame_strings[frame_index])
-            while (substring_end <= this_frame_strings_length):
+            prev_suffix_char_matches = True
+            # Go through all substrings from the current suffix start to the end
+            # of the suffix
+            while (substring_end <= frame_string_length):
+                substring_len = substring_end - start
+                absolute_index = substring_len - 1
+                this_char = frame_strings[frame_index][substring_end - 1]
+
+                # If this char doesn't match the one in the same position of the
+                # previous suffix, it means that we are done with all the substrings
+                # length (substring_end - start) onwards.
+                # Delete all temporary information about them, but don't bother
+                # doing this if it has already been done for this suffix
+                if (prev_suffix_char_matches and
+                    ((prev_start + absolute_index >= prev_frame_string_length) or
+                     (frame_strings[prev_frame_index][prev_start + absolute_index] != this_char))):
+
+                    assert None is logger.debug("Resetting dictionaries from length %d onwards" % absolute_index)
+                    del substring_length_histogram[absolute_index:]
+                    # XXX This is not worth creating some indexing structure because
+                    #     it's only 1.29% of the total time on kipo
+                    for substring_length_prev_start in substring_length_prev_starts:
+                        del substring_length_prev_start[absolute_index:]
+
+                    prev_suffix_char_matches = False
+
                 # If this char doesn't match the previous or next suffixes, it
                 # means that this and any larger substrings only match once, so
-                # ignore them, because it's useless to substitute single occurrences
-                # (the compression factor would be negative because of having to
-                # add the function body plus the function call)
-                absolute_index = substring_end - start - 1
-                this_char = frame_strings[frame_index][substring_end - 1]
-                if (((next_start + absolute_index >= next_suffix_length) or
+                # ignore them, because single occurrences will never be worth
+                # replacing (the compression factor would be negative because of
+                # having to add the function body plus the function call)
+                if (((next_start + absolute_index >= next_frame_string_length) or
                      (frame_strings[next_frame_index][next_start + absolute_index] != this_char)) and
-                    ((prev_start + absolute_index >= prev_suffix_length) or
-                     (frame_strings[prev_frame_index][prev_start + absolute_index] != this_char))):
+                     not prev_suffix_char_matches):
                     if (__debug__):
                         logger.debug("Early exiting")
                         try:
@@ -427,33 +470,81 @@ def main():
                             pass
                     break
 
-                substring = frame_strings[frame_index][start:substring_end]
-                substring_len = len(substring)
-                try:
-                    # substrings appear from the end first, so this substring has
-                    # to be len before the previous
-                    assert None is logger.debug("%s [%d,%d:]" % (substring, frame_index, start))
-                    prev_start = substring_prev_start[frame_index].get(substring, start + substring_len )
-                    if (abs(start - prev_start) >= substring_len):
-                        substring_histogram[substring] += 1
-                        substring_prev_start[frame_index][substring] = start
+                # substrings appear from the end first, so this substring has
+                # to be len before the previous
+                assert None is logger.debug("%s [%d,%d:%d]" % (frame_strings[frame_index][start:substring_end], frame_index, start, substring_end))
+
+                assert(len(substring_length_prev_starts[frame_index]) >= absolute_index)
+                if (absolute_index == len(substring_length_prev_starts[frame_index])):
+                    substring_length_prev_starts[frame_index].append(start - substring_len)
+
+                substring_prev_start = substring_length_prev_starts[frame_index][absolute_index]
+
+                if (abs(start - substring_prev_start) >= substring_len):
+                    substring_length_prev_starts[frame_index][absolute_index] = start
+                    assert(len(substring_length_histogram) >= absolute_index)
+                    if (absolute_index == len(substring_length_histogram)):
+                        # No need to check against best if this is the first time
+                        # it appears (a single occurrence substring is never a
+                        # best substring), will be checked once it's over 1
+                        # occurrences
+                        substring_length_histogram.append(1)
+
                     else:
-                        assert None is logger.debug("%s [%d:] overlaps [%d:]" % (substring, start, prev_start))
-                except KeyError:
-                    substring_histogram[substring] = 1
-                    substring_prev_start[frame_index][substring] = start
+                        substring_length_histogram[absolute_index] += 1
+                        assert None is logger.debug("%s count is now %d" % (
+                            frame_strings[frame_index][start:substring_end],
+                            substring_length_histogram[absolute_index]))
+                        # factor = N * L - N - L = N * (L - 1) - L
+                        this_factor = (substring_length_histogram[absolute_index] * (substring_len - 1) -
+                                       substring_len)
+
+                        if (best_substring_and_factor[1] < this_factor):
+                            assert None is logger.debug("Replaced %s factor %d with %s factor %d" %
+                                (frame_strings[best_substring_and_factor[0][0]][best_substring_and_factor[0][1]:best_substring_and_factor[0][2]],
+                                 best_substring_and_factor[1],
+                                 frame_strings[frame_index][start:substring_end],
+                                 this_factor))
+                            best_substring_and_factor[0] = (frame_index, start, substring_end)
+                            best_substring_and_factor[1] = this_factor
+
+                else:
+                    assert None is logger.debug("%s [%d:] overlaps [%d:]" %
+                            (frame_strings[frame_index][start:substring_end],
+                             start,
+                             substring_prev_start))
 
                 substring_end += 1
 
             suffix_array_index += 1
-            logger.debug(substring_histogram)
+            assert None is logger.debug("best: %s factor %d" % (
+                                 frame_strings[best_substring_and_factor[0][0]][best_substring_and_factor[0][1]:best_substring_and_factor[0][2]],
+                                 best_substring_and_factor[1]))
+            assert None is logger.debug("histogram: %s" % substring_length_histogram)
+            assert None is logger.debug("prev_start: %s" % substring_length_prev_starts)
 
+        # Put the best string in the histogram
+        if (best_substring_and_factor[0] is not None):
+            # XXX Setting the right count is overkill, but helps comparing vs.
+            #     previous, remove when this algorithm is robust
+            #   factor = N * L - N - L = N * (L - 1) - L -> N = (factor + L) / (L - 1)
+            substring = frame_strings[best_substring_and_factor[0][0]][best_substring_and_factor[0][1]:best_substring_and_factor[0][2]]
+            count = ((best_substring_and_factor[1] + len(substring)) / (len(substring) - 1))
+            substring_histogram[substring] = count
 
     LOG_LEVEL=logging.INFO
     logger.setLevel(LOG_LEVEL)
     logger.info("Starting")
 
-    load_frames = True
+    substring_histogram = {}
+    if (False):
+        frame_strings = [ 'aabaaa', 'cabaaaa', 'aaaabaaaa', 'caaaabaaa', 'caaaabaabb' ]
+        build_histogram(substring_histogram, frame_strings)
+        logger.info(substring_histogram)
+
+        import sys
+        sys.exit()
+
     frames = []
     frame_prototypes = []
     global_decls = []
@@ -496,15 +587,6 @@ def main():
 
     logger.info("Initial code lines: %d" % sum([len(s) for s in frame_strings]))
 
-    substring_histogram = {}
-    if (False):
-        frame_strings = [ 'aabaaa', 'cabaaaa', 'aaaabaaaa', 'caaaabaaa', 'caaaabaabb' ]
-        build_histogram(substring_histogram, frame_strings)
-        print substring_histogram
-
-        import sys
-        sys.exit()
-
     # XXX We don't need to rebuild the histogram from scratch on every
     #     iteration, we should be able to go to the functions that contained
     #     the best substring and do a partial update of those
@@ -522,7 +604,7 @@ def main():
 
         # Go through the substring histogram and take the ones with the highest
         # compression ratio
-        logger.debug("Searching for best substring")
+        logger.info("Searching for best substring")
         max_compression = 0
         best_substring_and_count = None
 
@@ -549,7 +631,7 @@ def main():
 
         # Convert the best substring into a new function and update
         # the necessary tables
-        logger.debug("Converting best substring into a new function")
+        logger.info("Converting best substring into a new function")
 
         #
         # Remove each occurrence of the best substring from the function strings
