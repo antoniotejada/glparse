@@ -193,6 +193,7 @@ def main():
         @see https://pypi.python.org/pypi/clang
         @see https://pypi.python.org/pypi/pycparser
         """
+        FUNCTION_PARAMETERS_REGEXP = re.compile(r"\s*(?P<function_name>[^(]+)(?P<function_args>\(.*)")
         with open(filename, "r") as f:
 
             brace_nest_level = 0
@@ -225,7 +226,7 @@ def main():
 
                 # Split into function and arguments
                 # XXX This doesn't work for multiline, etc
-                m = re.match(r"\s*(?P<function_name>[^(]+)(?P<function_args>\(.*)", line)
+                m = FUNCTION_PARAMETERS_REGEXP.match(line)
                 if (m is not None):
                     function_name = m.group('function_name').strip()
                     function_args_string = m.group('function_args').strip()
@@ -269,10 +270,11 @@ def main():
                 frame.append([function_name] + function_args)
 
 
-    def build_histogram(substring_histogram, frame_strings):
+    def build_histogram_slow(substring_histogram, frame_strings):
         # Don't bother with very short substrings
         min_substring_length = 2
-        logger.debug("Building histogram")
+        substring_hash_histogram = {}
+        best_substring_and_factor = [ 0, None ]
         for (frame_index, frame_string) in enumerate(frame_strings):
             frame_string_len = len(frame_string)
             for substring_length in xrange(min_substring_length, frame_string_len + 1):
@@ -289,24 +291,53 @@ def main():
                 #   length and content - the content matching part is achieved
                 #   by storing the start for each substring)
                 # - overlap can't happen across frames
-                substring_prev_start = {}
+                substring_hash_prev_start = {}
                 for i in xrange(0, frame_string_len - substring_length + 1):
-                    substring = frame_string[i:i+substring_length]
+                    # Using a hash instead of the substring to index the dictionary
+                    # consumes less memory for keys, but it's still too much for gtavc
+                    # Note Python's hash causes collisions. Adding the substring_length
+                    # is enough to remove those.
+                    ##substring_hash = (hash(frame_string[i:i+substring_length]) + substring_length)
+                    substring_hash = frame_string[i:i+substring_length]
                     try:
                         # If this is already in the histogram, increment if this substring
                         # doesn't overlap another occurrence of itself, so the compression
                         # factor calculated later doesn't double count
                         # By construction of the algorithm, the substring will only
                         # overlap if it starts inside the previous start of this substring
-                        prev_start = substring_prev_start.get(substring, -substring_length)
+                        prev_start = substring_hash_prev_start.get(substring_hash, -substring_length)
                         if (i >= prev_start + substring_length):
-                            substring_histogram[substring] += 1
-                            substring_prev_start[substring] = i
-                    except KeyError:
-                        substring_histogram[substring] = 1
-                        substring_prev_start[substring] = i
+                            substring_hash_histogram[substring_hash][0] += 1
+                            substring_hash_prev_start[substring_hash] = i
 
-    def build_histogram_fast(substring_histogram, frame_strings):
+                    except KeyError:
+                        substring_hash_histogram[substring_hash]= [1,
+                                                                   frame_string,
+                                                                   i,
+                                                                   substring_length]
+                        substring_hash_prev_start[substring_hash] = i
+
+        # Look for the best compression factor
+        max_compression = 0
+        best_substring_and_count = None
+        for (substring_hash, (count, frame_string, start, length)) in substring_hash_histogram.iteritems():
+            ##if (substring_and_count[1] > 1):
+            ##    print "----------------- %d -------------" % substring_and_count[1]
+            ##    for c in substring_and_count[0]:
+            ##        print "    %s" % char_to_function[c]
+            # The compression achieved is
+            #   + number of lines factored out * number of invocations
+            #   - number of lines factored out (for the function code)
+            #   - number of invocations (for the function calls)
+            this_compression = length * (count - 1) - count
+            if (max_compression < this_compression):
+                best_substring_and_count = (frame_string[start:start+length], count)
+                max_compression = this_compression
+
+        if (best_substring_and_count is not None):
+            substring_histogram[best_substring_and_count[0]] = best_substring_and_count[1]
+
+    def build_histogram(substring_histogram, frame_strings):
 
         def find_insertion_point(suffix_array, substring):
             index = 0
@@ -346,7 +377,7 @@ def main():
 
         # Create a suffix array containing the frame the string came from and the
         # start position of the string, packed in a 32bit value
-        logger.info("Creating suffix array")
+        logger.debug("Creating suffix array")
         suffix_array = array.array("L")
         build_suffix_array(suffix_array)
 
@@ -357,7 +388,7 @@ def main():
                 start = frame_index_and_start & 0xFFFF
                 assert None is logger.debug("%s (%d,%d)" % (frame_strings[frame_index][start:], frame_index, start))
 
-        logger.info("Building histogram with suffix array")
+        logger.debug("Building histogram with suffix array")
 
         # Find the substring with the largest compression factor
         #   N = Non overlapped occurrences of the substring
@@ -532,112 +563,17 @@ def main():
             count = ((best_substring_and_factor[1] + len(substring)) / (len(substring) - 1))
             substring_histogram[substring] = count
 
-    LOG_LEVEL=logging.INFO
-    logger.setLevel(LOG_LEVEL)
-    logger.info("Starting")
 
-    substring_histogram = {}
-    if (False):
-        frame_strings = [ 'aabaaa', 'cabaaaa', 'aaaabaaaa', 'caaaabaaa', 'caaaabaabb' ]
-        build_histogram(substring_histogram, frame_strings)
-        logger.info(substring_histogram)
-
-        import sys
-        sys.exit()
-
-    frames = []
-    frame_prototypes = []
-    global_decls = []
-
-    # Read the code, extract functions, function prototypes and global declarations
-    parse_c_file("_out/trace.inc", frames, frame_prototypes, global_decls)
-
-    # XXX Simplify the code into a three-address code, turn inline operations into
-    #     local variables
-
-    # XXX Could sort the functions for higher matching likelihood, but needs
-    #     sequence point information.
-
-    # The realization is that, as long as the function sequence is the same, we
-    # can always use enough formal parameters to be able to call it from any
-    # different call-sites
-
-    # Convert frames into strings by assigning one char to each function
-    function_to_char = {}
-    char_to_function = {}
-    frame_strings = []
-    frame_actual_parameters = []
-    for frame in frames:
-        this_frame_string = []
-        this_frame_actual_parameters = []
-        for line in frame:
-            function_name = line[0]
-            try:
-                function_char = function_to_char[function_name]
-            except:
-                function_char = unichr(len(function_to_char))
-                function_to_char[function_name] = function_char
-                char_to_function[function_char] = function_name
-            this_frame_string.append(function_char)
-            this_frame_actual_parameters.append(line[1:])
-
-        this_frame_string = string.join(this_frame_string, "")
-        frame_strings.append(this_frame_string)
-        frame_actual_parameters.append(this_frame_actual_parameters)
-
-    logger.info("Initial code lines: %d" % sum([len(s) for s in frame_strings]))
-
-    # XXX We don't need to rebuild the histogram from scratch on every
-    #     iteration, we should be able to go to the functions that contained
-    #     the best substring and do a partial update of those
-    #     But not that that requires going through the old code and removing all
-    #     substrings and setting to zero the histogram for the best substring
-    for k in range(10):
-
-        # Find the number of occurrences of each possible substring
-
-        # Each entry in the histogram is
-        # 'substring' : count
-        # Keeping the occurrences is necessary so we don't count overlaps
-        substring_histogram =  {}
-        build_histogram(substring_histogram, frame_strings)
-
-        # Go through the substring histogram and take the ones with the highest
-        # compression ratio
-        logger.info("Searching for best substring")
-        max_compression = 0
-        best_substring_and_count = None
-
-        for substring_and_count in substring_histogram.iteritems():
-            ##if (substring_and_count[1] > 1):
-            ##    print "----------------- %d -------------" % substring_and_count[1]
-            ##    for c in substring_and_count[0]:
-            ##        print "    %s" % char_to_function[c]
-            # The compression achieved is
-            #   + number of lines factored out * number of invocations
-            #   - number of lines factored out (for the function code)
-            #   - number of invocations (for the function calls)
-            this_compression = len(substring_and_count[0]) * (substring_and_count[1] - 1) - substring_and_count[1]
-            if (max_compression < this_compression):
-                best_substring_and_count = substring_and_count
-                max_compression = this_compression
-
-        # Don't bother with small compressions
-        min_compression = 0
-        if (max_compression <= min_compression):
-            # No worthy compression found, done
-            logger.info("Exhausted all the worthy compressions")
-            break
-
-        # Convert the best substring into a new function and update
-        # the necessary tables
-        logger.info("Converting best substring into a new function")
-
+    def replace_code(frame_strings, frame_prototypes, substring):
+        """!
+        Replace substring in frame_strings, appending the new code as a new frame_string
+        and frame_prototype
+        """
         #
         # Remove each occurrence of the best substring from the function strings
         # by replacing it with a new function
         #
-        best_substring_len = len(best_substring_and_count[0])
+        best_substring_len = len(substring)
         char_to_function_len = len(char_to_function)
         best_substring_frame_index = len(frame_strings)
         best_substring_function_name = "subframe%d" % best_substring_frame_index
@@ -648,6 +584,9 @@ def main():
         all_actual_parameters = []
         common_parameters = []
         best_substring_parameters = None
+        # XXX Should be able to use the suffix array to find all the positions
+        #     to substitute, remove them and append the new substring incrementally
+        #     to the suffix array
         for (frame_index, frame_string) in enumerate(frame_strings):
             i = 0
             frame_string_len = len(frame_string)
@@ -656,7 +595,7 @@ def main():
             old_frame_actual_parameters = frame_actual_parameters[frame_index]
             while (i < frame_string_len):
                 if ((i + best_substring_len > frame_string_len) or
-                    (best_substring_and_count[0] != frame_string[i:best_substring_len+i])):
+                    (substring != frame_string[i:best_substring_len+i])):
                     new_frame_string.append(frame_string[i])
                     new_frame_actual_parameters.append(old_frame_actual_parameters[i])
                     i += 1
@@ -759,9 +698,137 @@ def main():
                      (best_substring_function_name, str(frame_formal_parameters)))
 
         # Add the new function and its prototype to the global lists of functions
-        frame_strings.append(best_substring_and_count[0])
+        frame_strings.append(substring)
         frame_prototypes.append("void subframe%d(%s)" % (len(frame_prototypes),
                                                          string.join(frame_formal_parameters, ", ")))
+
+    LOG_LEVEL=logging.INFO
+    logger.setLevel(LOG_LEVEL)
+    logger.info("Starting")
+
+    substring_histogram = {}
+    if (False):
+        frame_strings = [ 'aabaaa', 'cabaaaa', 'aaaabaaaa', 'caaaabaaa', 'caaaabaabb' ]
+        build_histogram(substring_histogram, frame_strings)
+        logger.info(substring_histogram)
+
+        import sys
+        sys.exit()
+
+    frames = []
+    frame_prototypes = []
+    global_decls = []
+
+    # Read the code, extract functions, function prototypes and global declarations
+    parse_c_file("_out/trace.inc", frames, frame_prototypes, global_decls)
+    ##parse_c_file("_out/trace.kipo-all-frames.inc", frames, frame_prototypes, global_decls)
+    ##parse_c_file("_out/trace.gtavc.inc", frames, frame_prototypes, global_decls)
+
+    # XXX Simplify the code into a three-address code, turn inline operations into
+    #     local variables
+
+    # XXX Could sort the functions for higher matching likelihood, but needs
+    #     sequence point information.
+
+    # The realization is that, as long as the function sequence is the same, we
+    # can always use enough formal parameters to be able to call it from any
+    # different call-sites
+
+    # Convert frames into strings by assigning one char to each function
+    function_to_char = {}
+    char_to_function = {}
+    frame_strings = []
+    frame_actual_parameters = []
+    for frame in frames:
+        this_frame_string = []
+        this_frame_actual_parameters = []
+        for line in frame:
+            function_name = line[0]
+            try:
+                function_char = function_to_char[function_name]
+            except:
+                function_char = unichr(len(function_to_char))
+                function_to_char[function_name] = function_char
+                char_to_function[function_char] = function_name
+            this_frame_string.append(function_char)
+            this_frame_actual_parameters.append(line[1:])
+
+        this_frame_string = string.join(this_frame_string, "")
+        frame_strings.append(this_frame_string)
+        frame_actual_parameters.append(this_frame_actual_parameters)
+
+    logger.info("Initial code lines: %d" % sum([len(s) for s in frame_strings]))
+
+    # Sliding window parameters
+    # kipo-all 117405
+    # size=2, start=0, start_increment=5, size_increment=10 9463 1m4s
+    # size=2, start=0, start_increment=1, size_increment=0 8457 12s
+    # size=3, start=0, start_increment=1, size_increment=0 7329 12s
+    # size=4, start=0, start_increment=1, size_increment=0 6910 13s
+    # gtavc 1252989
+    # size=2, start=0, start_increment=1, size_increment=0 57955 3.95m
+    # size=4, start=0, start_increment=1, size_increment=0 45542 4.46m
+    window_size = 2
+    window_start = 0
+    window_start_increment = 1
+    window_size_increment = 0
+
+    for k in xrange(1000):
+
+        # Find the number of occurrences of each possible substring
+
+        # Each entry in the histogram is
+        # 'substring' : count
+        # XXX We don't need to rebuild the histogram from scratch on every
+        #     iteration, we should be able to go to the functions that contained
+        #     the best substring and do a partial update of those
+        #     But note that that requires going through the old code and removing all
+        #     substrings and setting to zero the histogram for the best substring
+        substring_histogram =  {}
+        window_end = int(window_start) + int(window_size)
+        logger.info("Building histogram for window [%d:%d]" % (window_start, window_end))
+        build_histogram(substring_histogram,
+                        frame_strings[int(window_start):window_end])
+
+        # XXX Should this be incremented only on unsuccessful compression?
+        window_start += window_start_increment
+        window_size += window_size_increment
+
+        # Go through the substring histogram and take the ones with the highest
+        # compression ratio
+        logger.debug("Searching for best substring")
+        max_compression = 0
+        best_substring_and_count = None
+
+        for substring_and_count in substring_histogram.iteritems():
+            ##if (substring_and_count[1] > 1):
+            ##    print "----------------- %d -------------" % substring_and_count[1]
+            ##    for c in substring_and_count[0]:
+            ##        print "    %s" % char_to_function[c]
+            # The compression achieved is
+            #   + number of lines factored out * number of invocations
+            #   - number of lines factored out (for the function code)
+            #   - number of invocations (for the function calls)
+            this_compression = len(substring_and_count[0]) * (substring_and_count[1] - 1) - substring_and_count[1]
+            if (max_compression < this_compression):
+                best_substring_and_count = substring_and_count
+                max_compression = this_compression
+
+        # Don't bother with small compressions
+        min_compression = 0
+        if (max_compression <= min_compression):
+            if (window_end > len(frame_strings)):
+                # No worthy compression found, done
+                logger.info("Exhausted all the worthy compressions")
+                break
+            else:
+                logger.debug("No compression found, sliding window only")
+                continue
+
+        # Convert the best substring into a new function and update
+        # the necessary tables
+        logger.debug("Converting best substring into a new function")
+        replace_code(frame_strings, frame_prototypes, best_substring_and_count[0])
 
     # Print the new code
     print_code(frame_strings, frame_prototypes, frame_actual_parameters)
