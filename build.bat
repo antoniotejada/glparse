@@ -2,8 +2,10 @@ cls
 
 setlocal
 
-REM Generate the .inc file
+REM Deleting old assets
 del /F /Q /S _out\assets > NUL
+
+REM Generate the .inc file
 python -O glparse.py > _out\trace.inc 2> _out\trace.log
 
 if ERRORLEVEL 1 GOTO ERROR

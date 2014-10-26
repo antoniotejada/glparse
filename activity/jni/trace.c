@@ -22,12 +22,12 @@
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
 #include <memory.h>
+#include <stdlib.h>
 
 #include <android/asset_manager.h>
 #include <android/log.h>
 
-#define LOGI(...) ((void)__android_log_print(ANDROID_LOG_INFO, "native-activity", __VA_ARGS__))
-#define LOGW(...) ((void)__android_log_print(ANDROID_LOG_WARN, "native-activity", __VA_ARGS__))
+#include "common.h"
 
 #ifndef GL_RED
 // GLES2 headers don't have this one, but GLES3 do
@@ -52,6 +52,10 @@
 #define GL_TEXTURE_SWIZZLE_A              0x8E45
 #define GL_TEXTURE_SWIZZLE_RGBA           0x8E46
 #endif
+
+
+#define GL_COMPRESSED_RGBA8_ETC2_EAC      0x9278
+#define GL_COMPRESSED_RGB8_ETC2           0x9274
 
 #ifndef GL_RGBA8
 #define GL_RGBA8 0x8058

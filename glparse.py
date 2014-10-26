@@ -32,7 +32,7 @@ import xml.etree.ElementTree
 logger = logging.getLogger(__name__)
 
 PROTOBUFF_DIR = "external/google"
-sys.path.append(PROTOBUFF_DIR)
+sys.path.append(os.path.join(sys.path[0],PROTOBUFF_DIR))
 try:
     import gltrace_pb2
 except ImportError:
@@ -111,6 +111,8 @@ def bytes_to_dwords(bytes):
     return dwords
 
 def update_translation_machinery_from_xml(translation_tables, translation_lookups):
+    # XXX Pickle this to disk so it doesn't need to be parsed every time, takes 29s
+    #     under the profiler
 
     def update_translation_overrides(translation_tables):
         # Some values are not present in gles, override them here
@@ -335,12 +337,17 @@ def main():
     ##trace = xopen(r"_out\contactsShowcaseAnimation.gltrace.gz", "rb")
     ##trace = xopen(r"_out\bmk_hw_layer.gltrace.gz", "rb")
     ##trace = xopen("_out/bmk_bitmap.gltrace.gz", "rb")
-    trace = xopen("_out/kipo.gltrace.gz", "rb")
+    ##trace = xopen("_out/kipo.gltrace.gz", "rb")
     ##trace = xopen("_out/gl2morphcubeva.gltrace.gz", "rb")
     ##trace = xopen("_out/kipo-full.gltrace", "rb")
     ##trace = xopen(r"_out\otter.gltrace.gz", "rb")
     ##trace = xopen("_out/GTAVC.gltrace.gz", "rb")
     ##trace = xopen("_out/venezia.gltrace.gz", "rb")
+    ##trace = xopen("_out/glcap.gltrace", "rb")
+    ##trace = xopen("_out/navigate-home.gltrace.gz", "rb")
+    ##trace = xopen("_out/com.amazon.tv.launcher.notextures.gltrace.gz", "rb")
+    trace = xopen("_out/com.amazon.tv.launcher.gltrace.gz", "rb")
+
 
     # Every argument can be optionally translated using a translation table
     # Each translation table contains:
@@ -510,13 +517,13 @@ def main():
     #
 
     max_frame_count = sys.maxint
-    max_frame_count = 200
+    ## max_frame_count = 200
     # This can be disabled to save ~5s of time
     # XXX This needs fixing so it doesn't use global tables with enums that gles2
     #     doesn't have
     use_human_friendly_gl_enums = True
     use_assets_for_shaders = True
-    use_assets_for_floats = True
+    use_assets_for_floats = False
     generate_empty_textures = False
     insert_glfinish_after_gl_functions = False
     insert_alog_after_gl_functions = False
@@ -543,7 +550,13 @@ def main():
         buffer_length = struct.unpack('!i', buffer_length)[0]
         logger.debug("unpacked %d ints" % buffer_length)
         buffer = trace.read(buffer_length)
-        msg = gltrace_pb2.GLMessage.FromString(buffer)
+        try:
+            # The protobuff will be truncated if the app was terminated, etc
+            # ignore the exception
+            msg = gltrace_pb2.GLMessage.FromString(buffer)
+        except:
+            logger.warning("Decode error, truncated protobuff, trace will be incomplete")
+            break
 
         function_name = function_enum_type.values_by_number[msg.function].name
         function_string = function_name
@@ -559,6 +572,7 @@ def main():
         if (function_name == "eglSwapBuffers"):
             code = []
             frame_count += 1
+            logger.info("Parsing frame %d" % frame_count)
             if (frame_count >= max_frame_count):
                 break
             # Note a reference is appended, so processing an eglSwapBuffers is
@@ -656,6 +670,11 @@ def main():
 
             logger.debug("Switched current uniforms to %s" % table_name)
 
+        # XXX Trap glBindFrameBuffer 0 if rendering offscreen
+        # XXX Trap the largest glViewport done on framebuffer 0 to get the
+        #     framebuffer size
+        # XXX Could also resize other viewports proportionally
+
         args_strings = []
         preamble_strings = []
         epilogue_strings = []
@@ -745,6 +764,11 @@ def main():
                 # to signify that it's an array of char arrays
                 if (arg_index == 2):
                     arg.isArray = False
+                    # XXX Hacked support for external textures, change samplerExternalOES to
+                    #     to sampler2D
+                    logger.debug("Doing samplerExternalOES to sampler2D overlay")
+                    arg.charValue[0] = arg.charValue[0].replace("samplerExternalOES", "sampler2D")
+
                 # Always set the length pointer to zero, as we don't need it
                 # and passing random pointers causes errors otherwise
                 if (arg_index == 3):
@@ -755,6 +779,14 @@ def main():
                 # it's always an ENUM
                 # Switch to ENUM so it gets translated
                 arg.type = gltrace_pb2.GLMessage.DataType.ENUM
+
+            elif ((function_name in ["glTexImage2D", "glTexParameteri", "glBindTexture"]) and
+                  (arg_index == 0)):
+                if (arg.intValue[0] == 0x8D65):
+                    # XXX Hacked support for external textures by overlaying them on top of 2D
+                    #     textures
+                    logger.debug("Doing GL_TEXTURE_EXTERNAL_OES overlay on GL_TEXTURE_2D for %s" % function_name)
+                    arg.intValue[0] = 0x0DE1
 
             elif  (((function_name == "glTexImage2D") and (arg_index == 8)) or
                    ((function_name == "glTexSubImage2D") and (arg_index == 8)) or
@@ -1103,7 +1135,8 @@ def main():
         print "            frame%d(param_AAssetManager_ptr_0);" % frame_index
         print "        break;"
     print "        default: "
-    print '            LOGI("Ignoring inexistent frame %d", frame_limit);'
+    print '            LOGI("Reached frame %d end of replay, exiting", frame_limit);'
+    print '            exit(EXIT_SUCCESS);'
     print "    }"
     print "}"
     print

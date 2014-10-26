@@ -17,7 +17,7 @@ LOCAL_PATH := $(call my-dir)
 include $(CLEAR_VARS)
 
 LOCAL_MODULE    := native-activity
-LOCAL_SRC_FILES := main.c trace.c
+LOCAL_SRC_FILES := main.c trace.c intent.c
 # LOCAL_LDLIBS    := -llog -landroid -lEGL -lGLESv1_CM
 LOCAL_LDLIBS    := -llog -landroid -lEGL -lGLESv2
 LOCAL_STATIC_LIBRARIES := android_native_app_glue
