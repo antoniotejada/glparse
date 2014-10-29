@@ -347,7 +347,7 @@ def main():
     ##trace = xopen("_out/navigate-home.gltrace.gz", "rb")
     ##trace = xopen("_out/com.amazon.tv.launcher.notextures.gltrace.gz", "rb")
     trace = xopen("_out/com.amazon.tv.launcher.gltrace.gz", "rb")
-
+    ##trace = xopen("_out/com.vectorunit.blue-30s-textures.gltrace.gz", "rb")
 
     # Every argument can be optionally translated using a translation table
     # Each translation table contains:
@@ -543,6 +543,26 @@ def main():
     global_decls.append("const GLfloat* global_const_float_ptr_0")
     global_decls.append("const GLchar* global_const_char_ptr_0")
     global_decls.append("const GLint* global_const_int_ptr_0")
+
+    # XXX These should probably be in some state-dependent table so it gets
+    #     switched in and out (or in some framebuffer-dependent state?)
+    # Currently bound framebuffer
+    current_framebuffer = 0
+    # Current and max viewport state
+    current_viewport_x = 0;
+    current_viewport_y = 0;
+    current_viewport_width = 0;
+    current_viewport_height = 0;
+    max_viewport_width = 0;
+    max_viewport_height = 0;
+    # Current and max scissor state
+    current_scissor_x = 0;
+    current_scissor_y = 0;
+    current_scissor_width = 0;
+    current_scissor_height = 0;
+    max_scissor_width = 0;
+    max_scissor_height = 0;
+
     while True:
         buffer_length = trace.read(4)
         if (buffer_length == ""):
@@ -670,11 +690,6 @@ def main():
 
             logger.debug("Switched current uniforms to %s" % table_name)
 
-        # XXX Trap glBindFrameBuffer 0 if rendering offscreen
-        # XXX Trap the largest glViewport done on framebuffer 0 to get the
-        #     framebuffer size
-        # XXX Could also resize other viewports proportionally
-
         args_strings = []
         preamble_strings = []
         epilogue_strings = []
@@ -690,7 +705,108 @@ def main():
 
             # Patch wrong functions
             # XXX Use function code rather than function name
-            if ((function_name == "glGetVertexAttribiv") and (arg_index == 2)):
+
+            if (function_name == "glBindFramebuffer"):
+                if (arg_index == 1):
+                    current_framebuffer = int(arg.intValue[0])
+                    # Always reset the viewport and scissor when switching
+                    # framebuffers, as it could have the scaled version set
+                    if (current_framebuffer == 0):
+                        code.append("glScaledViewport(%d, %d, %d, %d)" %
+                            (current_viewport_x,
+                             current_viewport_y,
+                             current_viewport_width,
+                             current_viewport_height))
+                        code.append("glScaledScissor(%d, %d, %d, %d)" %
+                            (current_scissor_x,
+                             current_scissor_y,
+                             current_scissor_width,
+                             current_scissor_height))
+                    else:
+                        code.append("glViewport(%d, %d, %d, %d)" %
+                            (current_viewport_x,
+                             current_viewport_y,
+                             current_viewport_width,
+                             current_viewport_height))
+                        code.append("glViewport(%d, %d, %d, %d)" %
+                            (current_scissor_x,
+                             current_scissor_y,
+                             current_scissor_width,
+                             current_scissor_height))
+
+            elif (function_name == "glViewport"):
+                # Collect the maximum viewport so it can be scaled when
+                # framebuffer 0 is bound
+                # XXX Optionally, this could scale all framebuffers, not just
+                #     framebuffer 0
+                if (arg_index == 0):
+                    current_viewport_x = int(arg.intValue[0])
+
+                elif (arg_index == 1):
+                    current_viewport_y = int(arg.intValue[0])
+
+                elif (arg_index == 2):
+                    current_viewport_width = int(arg.intValue[0])
+
+                elif (arg_index == 3):
+                    current_viewport_height = int(arg.intValue[0])
+                    # Use the first call as heuristic to framebuffer 0 width and
+                    # height
+                    # XXX Viewport size tracking should be smarter, it
+                    #     should track the viewport size just before rendering to
+                    #     framebuffer 0, not just when calling glViewport, but
+                    #     some apps may even use bigger viewport sizes when they
+                    #     do that, so it's not fail-proof
+                    if (max_viewport_height == 0):
+                        max_viewport_width = current_viewport_width
+                        max_viewport_height = current_viewport_height
+
+                    # We need to scale the viewport if rendering to framebuffer 0
+                    if (current_framebuffer == 0):
+                        function_string = "glScaledViewport"
+
+            elif (function_name == "glScissor"):
+                # Collect the maximum scissor so it can be scaled when
+                # framebuffer 0 is bound
+                # XXX Optionally, this could scale all framebuffers, not just
+                #     framebuffer 0
+                if (arg_index == 0):
+                    current_scissor_x = int(arg.intValue[0])
+
+                elif (arg_index == 1):
+                    current_scissor_y = int(arg.intValue[0])
+
+                elif (arg_index == 2):
+                    current_scissor_width = int(arg.intValue[0])
+
+                elif (arg_index == 3):
+                    current_scissor_height = int(arg.intValue[0])
+                    # Use the first call as heuristic to framebuffer 0 width and
+                    # height
+                    # XXX scissor size tracking should be smarter, it
+                    #     should track the scissor size just before rendering to
+                    #     framebuffer 0, not just when calling glScissor, but
+                    #     some apps may even use bigger scissor sizes when they
+                    #     do that, so it's not fail-proof
+                    if (max_scissor_height == 0):
+                        max_scissor_width = current_scissor_width
+                        max_scissor_height = current_scissor_height
+
+                    # We need to scale the scissor if rendering to framebuffer 0
+                    if (current_framebuffer == 0):
+                        function_string = "glScaledScissor"
+
+            elif (function_name == "glDisable"):
+                # Allow overriding dithering
+                if (int(arg.intValue[0]) == 0x0BD0):
+                    function_string = "glOverriddenDisable"
+
+            elif (function_name == "glEnable"):
+                # Allow overriding dithering
+                if (int(arg.intValue[0]) == 0x0BD0):
+                    function_string = "glOverriddenEnable"
+
+            elif ((function_name == "glGetVertexAttribiv") and (arg_index == 2)):
                 # XXX The trace sends intValue with isArray false
                 logger.debug("Patching function %s" % function_name)
                 arg.isArray = True
@@ -1111,6 +1227,15 @@ def main():
             pass
 
     logger.info("Writing code")
+
+    # Generate some global declarations only known at trace end time
+    global_decls.append("static const GLsizei max_viewport_width  = %d" % max_viewport_width)
+    global_decls.append("static const GLsizei max_viewport_height = %d" % max_viewport_height)
+    global_decls.append("static const GLsizei max_scissor_width  = %d" % max_scissor_width)
+    global_decls.append("static const GLsizei max_scissor_height = %d" % max_scissor_height)
+    # These are exposed to the EGL surface creation
+    global_decls.append("int egl_width  = %d" % max_scissor_width)
+    global_decls.append("int egl_height = %d" % max_scissor_height)
 
     # Generate the global declarations
     for decl in global_decls:

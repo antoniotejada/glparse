@@ -19,13 +19,14 @@
  *
  * https://cvs.khronos.org/svn/repos/ogl/trunk/doc/registry/public/api/gl.xml
  */
+#include <android/asset_manager.h>
+#include <android/log.h>
+#include <EGL/egl.h>
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
 #include <memory.h>
+#include <stdbool.h>
 #include <stdlib.h>
-
-#include <android/asset_manager.h>
-#include <android/log.h>
 
 #include "common.h"
 
@@ -61,6 +62,9 @@
 #define GL_RGBA8 0x8058
 #endif
 
+// XXX Move to some common config file
+extern bool gl_enable_dither;
+extern bool gl_disable_dither;
 
 GL_APICALL void GL_APIENTRY glStartTilingQCOM (GLuint x, GLuint y, GLuint width, GLuint height, GLbitfield preserveMask)
 {
@@ -153,4 +157,65 @@ void glVertexAttribPointerData(GLuint index,  GLint size,  GLenum type,  GLboole
     glVertexAttribPointer(index, size, type, normalized, 0, pointer);
 }
 
+void glScaledViewport(GLint x, GLint y, GLsizei width, GLsizei height);
+void glScaledScissor(GLint x, GLint y, GLsizei width, GLsizei height);
+void glOverriddenDisable(GLenum cap);
+void glOverriddenEnable(GLenum cap);
+
 #include "../../_out/trace2.inc"
+
+/**
+ * Function to scale viewport calls on framebuffer 0 by the ratio between
+ * the EGL size and the maximum framebuffer 0 viewport found in the trace
+ */
+void glScaledViewport(GLint x, GLint y, GLsizei width, GLsizei height)
+{
+    glViewport((x * egl_width)/max_viewport_width, 
+               (y * egl_height)/max_viewport_height, 
+               (width * egl_width)/max_viewport_width, 
+               (height * egl_height)/max_viewport_height);
+}
+
+/**
+ * Function to scale scissor calls on framebuffer 0 by the ratio between
+ * the EGL size and the maximum framebuffer 0 scissor found in the trace
+ */
+void glScaledScissor(GLint x, GLint y, GLsizei width, GLsizei height)
+{
+    glScissor((x * egl_width)/max_scissor_width, 
+               (y * egl_height)/max_scissor_height, 
+               (width * egl_width)/max_scissor_width, 
+               (height * egl_height)/max_scissor_height);
+}
+
+void glOverriddenEnable(GLenum cap)
+{
+    switch (cap)
+    {
+        case GL_DITHER:
+            if (!gl_disable_dither)
+            {
+                glEnable(cap);
+            }
+        break;
+        default:
+            LOGE("Unhandled overridden enable 0x%d", cap);
+        break;
+    }
+}
+
+void glOverriddenDisable(GLenum cap)
+{
+    switch (cap)
+    {
+        case GL_DITHER:
+            if (!gl_enable_dither)
+            {
+                glDisable(cap);
+            }
+        break;
+        default:
+            LOGE("Unhandled overridden disable 0x%d", cap);
+        break;
+    }
+}
