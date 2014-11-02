@@ -31,6 +31,27 @@ import xml.etree.ElementTree
 
 logger = logging.getLogger(__name__)
 
+# Global variables updated from the command-line
+## trace_filepath = "_out/bmk_hw_layer_use_color_hw_layer.gltrace.gz"
+## trace_filepath"_out/com.amazon.kindle.otter.gltrace.gz"
+## trace_filepath"_out\contactsShowcaseAnimation.gltrace.gz"
+## trace_filepath"_out\bmk_hw_layer.gltrace.gz"
+## trace_filepath ="_out/bmk_bitmap.gltrace.gz"
+## trace_filepath ="_out/kipo.gltrace.gz"
+## trace_filepath ="_out/gl2morphcubeva.gltrace.gz"
+## trace_filepath ="_out/kipo-full.gltrace"
+## trace_filepath"_out\otter.gltrace.gz"
+## trace_filepath ="_out/GTAVC.gltrace.gz"
+## trace_filepath ="_out/venezia.gltrace.gz"
+## trace_filepath ="_out/glcap.gltrace"
+## trace_filepath ="_out/navigate-home.gltrace.gz"
+## trace_filepath ="_out/com.amazon.tv.launcher.notextures.gltrace.gz"
+## trace_filepath ="_out/com.amazon.tv.launcher.gltrace.gz"
+## trace_filepath = "_out/com.vectorunit.blue-60s-textures.gltrace.gz"
+trace_filepath = "_out/com.vectorunit.blue-60s-textures.gltrace.gz"
+output_dir="_out"
+gl_contexts_to_trace = [0]
+
 PROTOBUFF_DIR = "external/google"
 sys.path.append(os.path.join(sys.path[0],PROTOBUFF_DIR))
 try:
@@ -284,17 +305,19 @@ def allocate_asset(asset_buffer_ptr, asset_filename, asset_buffer_ptr_type, asse
     Register the given asset and unregister
     """
     # Free a possible asset allocated to this id
+    # XXX Hash the assets and reuse them if they have the same content?
     code = []
     if (asset_variable_ptr in allocated_assets):
-        code.extend(free_asset(asset_variable_ptr))
+        code.extend(free_asset(asset_variable_ptr, asset_buffer_ptr))
     else:
         # It's the first time we see this asset, generate code to create this
         # asset variable
-        global_decls.append("AAsset* %s = NULL" % asset_variable_ptr);
+        global_decls.append("AAsset* %s = NULL" % asset_variable_ptr)
+        global_decls.append("%s %s = NULL" % (asset_buffer_ptr_type, asset_buffer_ptr))
     allocated_assets.add(asset_variable_ptr)
 
     # Save the asset to a file
-    with open("_out/assets/%s" % asset_filename, "wb") as f:
+    with open(os.path.join(assets_dir, asset_filename), "wb") as f:
         f.write(asset_bytes)
 
     # Generate the instructions to load that asset
@@ -318,36 +341,17 @@ def allocate_asset(asset_buffer_ptr, asset_filename, asset_buffer_ptr_type, asse
 
     return code
 
-def free_asset(asset_variable_ptr):
+def free_asset(asset_variable_ptr, asset_buffer_ptr):
     allocated_assets.remove(asset_variable_ptr)
 
     return ["closeAsset(%s)" % asset_variable_ptr,
-            "%s = NULL" % asset_variable_ptr]
+            "%s = NULL" % asset_variable_ptr, "%s = NULL" % asset_buffer_ptr]
 
 def main():
     global num_allocated_vars
 
-    LOG_LEVEL=logging.INFO
-
-    logger.setLevel(LOG_LEVEL)
-
     logger.info("Starting")
-    ##trace = xopen(r"_out/bmk_hw_layer_use_color_hw_layer.gltrace.gz", "rb")
-    ##trace = xopen(r"_out/com.amazon.kindle.otter.gltrace.gz", "rb")
-    ##trace = xopen(r"_out\contactsShowcaseAnimation.gltrace.gz", "rb")
-    ##trace = xopen(r"_out\bmk_hw_layer.gltrace.gz", "rb")
-    ##trace = xopen("_out/bmk_bitmap.gltrace.gz", "rb")
-    ##trace = xopen("_out/kipo.gltrace.gz", "rb")
-    ##trace = xopen("_out/gl2morphcubeva.gltrace.gz", "rb")
-    ##trace = xopen("_out/kipo-full.gltrace", "rb")
-    ##trace = xopen(r"_out\otter.gltrace.gz", "rb")
-    ##trace = xopen("_out/GTAVC.gltrace.gz", "rb")
-    ##trace = xopen("_out/venezia.gltrace.gz", "rb")
-    ##trace = xopen("_out/glcap.gltrace", "rb")
-    ##trace = xopen("_out/navigate-home.gltrace.gz", "rb")
-    ##trace = xopen("_out/com.amazon.tv.launcher.notextures.gltrace.gz", "rb")
-    trace = xopen("_out/com.amazon.tv.launcher.gltrace.gz", "rb")
-    ##trace = xopen("_out/com.vectorunit.blue-30s-textures.gltrace.gz", "rb")
+    trace = xopen(trace_filepath)
 
     # Every argument can be optionally translated using a translation table
     # Each translation table contains:
@@ -505,9 +509,9 @@ def main():
         # "glBindTexture"   : { 0 : { "field" : "intValue", "table" : "TextureTarget" }},
     }
 
-    # Create the asset directory
+    # Create the asset directory, ignore if it already existsmay exist already,
     try:
-        os.mkdir("_out/assets")
+        os.mkdir(assets_dir)
     except OSError as e:
         if (e.errno != errno.EEXIST):
             raise
@@ -517,17 +521,30 @@ def main():
     #
 
     max_frame_count = sys.maxint
-    ## max_frame_count = 200
+    ##max_frame_count = 200
     # This can be disabled to save ~5s of time
     # XXX This needs fixing so it doesn't use global tables with enums that gles2
     #     doesn't have
     use_human_friendly_gl_enums = True
+
+    # XXX Use min/max asset sizes for shaders?
     use_assets_for_shaders = True
-    use_assets_for_floats = False
+
+    use_assets_for_floats = True
+    # Don't bother storing small floats in assets
+    min_float_asset_size_in_floats = 64
+    # Don't blow the stack if inlining floats
+    max_float_inlined_size_in_floats = 512
+
+    use_assets_for_ints = True
+    # Don't bother storing small ints in assets
+    min_int_asset_size_in_bytes = 256
+    # Don't blow the stack if inlining ints
+    max_int_inlined_size_in_bytes = 2048
+
     generate_empty_textures = False
     insert_glfinish_after_gl_functions = False
     insert_alog_after_gl_functions = False
-    gl_contexts_to_trace = [0]
     if (use_human_friendly_gl_enums):
         update_translation_machinery_from_xml(translation_tables, translation_lookups)
 
@@ -540,9 +557,12 @@ def main():
     code_frames = [code]
     global_decls = []
     # Add the global declarations for the temporary asset buffer pointers
+    # XXX Stop special-handling these?
+    #     They conflict when fully inlining insead of using assets or viceversa?
     global_decls.append("const GLfloat* global_const_float_ptr_0")
     global_decls.append("const GLchar* global_const_char_ptr_0")
-    global_decls.append("const GLint* global_const_int_ptr_0")
+    ## global_decls.append("const GLint* global_const_int_ptr_0")
+
 
     # XXX These should probably be in some state-dependent table so it gets
     #     switched in and out (or in some framebuffer-dependent state?)
@@ -652,10 +672,6 @@ def main():
                 logger.debug(current_state[current_field_name])
                 current_state[current_field_name] = next_current_value
 
-        # XXX glVertexAttribPointerData is a fake call that Android inserts before
-        # glDrawXXXXX to supply the glVertexAttribPointer data, see
-        # http://stackoverflow.com/questions/14382208/what-is-glvertexattribpointerdata
-
         # Ignore makecurrent and createcontext
         # XXX Implement makecurrent and createcontext
         if ((function_name == "eglCreateContext") or
@@ -708,7 +724,7 @@ def main():
 
             if (function_name == "glBindFramebuffer"):
                 if (arg_index == 1):
-                    current_framebuffer = int(arg.intValue[0])
+                    current_framebuffer = arg.intValue[0]
                     # Always reset the viewport and scissor when switching
                     # framebuffers, as it could have the scaled version set
                     if (current_framebuffer == 0):
@@ -728,7 +744,7 @@ def main():
                              current_viewport_y,
                              current_viewport_width,
                              current_viewport_height))
-                        code.append("glViewport(%d, %d, %d, %d)" %
+                        code.append("glScissor(%d, %d, %d, %d)" %
                             (current_scissor_x,
                              current_scissor_y,
                              current_scissor_width,
@@ -740,16 +756,16 @@ def main():
                 # XXX Optionally, this could scale all framebuffers, not just
                 #     framebuffer 0
                 if (arg_index == 0):
-                    current_viewport_x = int(arg.intValue[0])
+                    current_viewport_x = arg.intValue[0]
 
                 elif (arg_index == 1):
-                    current_viewport_y = int(arg.intValue[0])
+                    current_viewport_y = arg.intValue[0]
 
                 elif (arg_index == 2):
-                    current_viewport_width = int(arg.intValue[0])
+                    current_viewport_width = arg.intValue[0]
 
                 elif (arg_index == 3):
-                    current_viewport_height = int(arg.intValue[0])
+                    current_viewport_height = arg.intValue[0]
                     # Use the first call as heuristic to framebuffer 0 width and
                     # height
                     # XXX Viewport size tracking should be smarter, it
@@ -757,6 +773,9 @@ def main():
                     #     framebuffer 0, not just when calling glViewport, but
                     #     some apps may even use bigger viewport sizes when they
                     #     do that, so it's not fail-proof
+                    # XXX A known offender is GTAVC, where the first viewport
+                    #     is not the full one. A later viewport inside the trace
+                    #     is full.
                     if (max_viewport_height == 0):
                         max_viewport_width = current_viewport_width
                         max_viewport_height = current_viewport_height
@@ -771,16 +790,16 @@ def main():
                 # XXX Optionally, this could scale all framebuffers, not just
                 #     framebuffer 0
                 if (arg_index == 0):
-                    current_scissor_x = int(arg.intValue[0])
+                    current_scissor_x = arg.intValue[0]
 
                 elif (arg_index == 1):
-                    current_scissor_y = int(arg.intValue[0])
+                    current_scissor_y = arg.intValue[0]
 
                 elif (arg_index == 2):
-                    current_scissor_width = int(arg.intValue[0])
+                    current_scissor_width = arg.intValue[0]
 
                 elif (arg_index == 3):
-                    current_scissor_height = int(arg.intValue[0])
+                    current_scissor_height = arg.intValue[0]
                     # Use the first call as heuristic to framebuffer 0 width and
                     # height
                     # XXX scissor size tracking should be smarter, it
@@ -798,12 +817,12 @@ def main():
 
             elif (function_name == "glDisable"):
                 # Allow overriding dithering
-                if (int(arg.intValue[0]) == 0x0BD0):
+                if (arg.intValue[0] == 0x0BD0):
                     function_string = "glOverriddenDisable"
 
             elif (function_name == "glEnable"):
                 # Allow overriding dithering
-                if (int(arg.intValue[0]) == 0x0BD0):
+                if (arg.intValue[0] == 0x0BD0):
                     function_string = "glOverriddenEnable"
 
             elif ((function_name == "glGetVertexAttribiv") and (arg_index == 2)):
@@ -827,10 +846,6 @@ def main():
                     # to prevent gcc warnings
                     arg.type = gltrace_pb2.GLMessage.DataType.VOID
 
-            elif ((function_name == "glVertexAttribPointerData") and (arg_index > 5)):
-                # XXX The trace sends two extra ints with some indices?
-                continue
-
             elif (function_name == "glGetFloatv"):
                 if (arg_index == 0):
                     is_aliased_point_size_range = True
@@ -845,7 +860,7 @@ def main():
                 # instead array of int and array of char, convert to those
                 if (arg_index == 1):
                     # Store the max length for later
-                    get_shader_info_log_max_length = int(arg.intValue[0])
+                    get_shader_info_log_max_length = arg.intValue[0]
                     logger.debug("Found shader_info_log_max_length %d" % get_shader_info_log_max_length)
                 if (arg_index == 2):
                     # Convert to pointer to int
@@ -889,6 +904,14 @@ def main():
                 # and passing random pointers causes errors otherwise
                 if (arg_index == 3):
                     arg.intValue[0] = 0
+
+            elif (function_name == "glVertexAttribPointerData"):
+                # The C function only understands a few types, make sure we catch
+                # this issue at trace generation time
+                if ((arg_index == 2) and
+                    # GL_BYTE, GL_UNSIGNED_BYTE, GL_SHORT, GL_UNSIGNED_SHORT, GL_FIXED, GL_FLOAT
+                    (arg.intValue[0] not in [0x1400, 0x1401, 0x1402, 0x1403, 0x140C, 0x1406])):
+                    raise Exception("Unhandled type 0x%x in message %s" % (arg.intValue[0], msg))
 
             elif ((function_name == "glTexParameteri") and (arg_index == 2)):
                 # glTexParameteri has an INT as last parameter but in real life
@@ -989,13 +1012,18 @@ def main():
             # When all of intValue, floatValue and isArray are set, a pointer is
             # passed in with existing float contents
             # This is used for glUniformMatrix4fv, etc
+            # This is also used for glGetFloatv, etc so it cannot be declared
+            # const
             if ((len(arg.floatValue) > 0) and (arg.isArray)):
-                if (use_assets_for_floats):
+                if ((use_assets_for_floats and
+                    (len(arg.floatValue) > min_float_asset_size_in_floats)) or
+                    (len(arg.floatValue) > max_float_inlined_size_in_floats)):
                     arg_name = "global_const_float_ptr_0"
                     asset_filename = "float_asset_%d" % num_allocated_vars
+
                     preamble_strings.extend(allocate_asset(arg_name,
                                                            asset_filename,
-                                                           "const float*",
+                                                           "float*",
                                                            "global_AAsset_ptr_0",
                                                            string.join([struct.pack("f", f) for f in arg.floatValue],""),
                                                            global_decls))
@@ -1003,9 +1031,10 @@ def main():
                 else:
                     # XXX Change this to use the global pointer?
                     arg_name = "local_float_ptr_%d" % num_allocated_vars
-                    preamble_strings.append("const float %s[] = { %s }" % (
+                    preamble_strings.append("float %s[] = { %s }" % (
                         arg_name,
                         string.join([str(f) for f in arg.floatValue], ", ")))
+
                 args_strings.append(arg_name)
                 num_allocated_vars += 1
 
@@ -1014,36 +1043,53 @@ def main():
             # Note isArray is set to False above when NULLing textures, so ignore
             # those
             elif ((len(arg.rawBytes) > 0) and (arg.isArray)):
-                asset_filename = "int_asset_%d" % num_allocated_vars
-                arg_name = "global_const_int_ptr_0"
+                if ((use_assets_for_ints and
+                    (len(arg.rawBytes[0]) > min_int_asset_size_in_bytes)) or
+                    (len(arg.rawBytes[0]) > max_int_inlined_size_in_bytes)):
+                    asset_filename = "int_asset_%d" % num_allocated_vars
+
+                    if (function_name == "glVertexAttribPointerData"):
+                        arg_name = "global_const_int_ptr_%d" % (msg.args[0].intValue[0]+1)
+                        preamble_strings.extend(allocate_asset(arg_name,
+                                                               asset_filename,
+                                                               "const unsigned int*",
+                                                               "global_AAsset_ptr_%d" % (msg.args[0].intValue[0]+1),
+                                                               arg.rawBytes[0],
+                                                               global_decls))
+                        # The asset will be freed when it's allocated again with
+                        # that name
+                        # XXX Need to free the assets at the end of the trace
+                    else:
+                        arg_name = "global_const_int_ptr_0"
+                        preamble_strings.extend(allocate_asset(arg_name,
+                                                               asset_filename,
+                                                               "const unsigned int*",
+                                                               "global_AAsset_ptr_0",
+                                                               arg.rawBytes[0],
+                                                               global_decls))
+                        # This is a short-lived asset only used in this GL call, could
+                        # be freed after the call, but that complicates the asset
+                        # variable declaration, so we just free it the next time
+                        # an asset with this name is allocated
+                else:
+                    # XXX Change this to use the global pointer?
+                    arg_name = "local_const_char_ptr_%d" % num_allocated_vars
+                    preamble_strings.append("const char %s[%d] = { %s }" % (
+                        arg_name,
+                        len(arg.rawBytes[0]),
+                        string.join([hex(ord(b)) for b in arg.rawBytes[0]], ", ")))
+
                 args_strings.append(arg_name)
                 num_allocated_vars += 1
-                if (function_name == "glVertexAttribPointerData"):
-                    preamble_strings.extend(allocate_asset(arg_name,
-                                                           asset_filename,
-                                                           "const unsigned int*",
-                                                           "global_AAsset_ptr_%d" % (msg.args[0].intValue[0]+1),
-                                                           arg.rawBytes[0],
-                                                           global_decls))
-                    # The asset will be freed when it's allocated again with
-                    # that name
-                    # XXX Need to free the assets at the end of the trace
-                else:
-                    preamble_strings.extend(allocate_asset(arg_name,
-                                                           asset_filename,
-                                                           "const unsigned int*",
-                                                           "global_AAsset_ptr_0",
-                                                           arg.rawBytes[0],
-                                                           global_decls))
-                    # This is a short-lived asset only used in this GL call, could
-                    # be freed after the call, but that complicates the asset
-                    # variable declaration, so we just free it the next time
-                    # an asset with this name is allocated
 
             # When isArray is set, the parameter is passed by reference and
             # contains a return value, which is held in the xxxValue part
             # Those need to be stored in variables in case they are used
             # in the future
+            # One special case is glDrawElements, where an array is passed in,
+            # but with values already
+            # XXX We actually don't need to initialize the arrays passed by reference
+            #     can we tell the difference between glGenTextures and glDrawElements?
             # Note booleans have both len(intValue) and len(boolValue) greater
             # than zero
             elif ((arg.isArray) and ((len(arg.intValue) > 0) or (len(arg.boolValue) > 0) or
@@ -1067,14 +1113,66 @@ def main():
                         # VOID
                         preamble_strings.append("GLvoid* %s[1]" % var_name)
                     else:
-                        # This is used for eg texture ids, so it needs to preserve
-                        # the data across invocations
+                        # This is used for generating texture ids, buffer ids, etc,
+                        # so it needs to preserve the data across invocations
                         # XXX Where else is static needed?
                         # Remove the local prefix
                         var_name = "global_int_ptr_%d" % num_allocated_vars
-                        global_decls.append("static GLint %s[%d] = {%s}" %
-                                    (var_name , len(arg.intValue),
-                                     string.join([str(i) for i in arg.intValue], ", ")))
+                        var_type = "GLint"
+                        var_size = 4
+                        pack_type = "i"
+                        # glDrawElements can use different element sizes, use
+                        # the proper type
+                        # XXX Is there any other function with different int sizes?
+                        if (function_name == "glDrawElements"):
+
+                            # GL_UNSIGNED_SHORT 0x1403
+                            if (msg.args[2].intValue[0] == 0x1403):
+                                var_size = 2
+                                var_type = "GLushort"
+                                pack_type = "H"
+
+                            # GL_UNSIGNED_BYTE 0x1401
+                            elif (msg.args[2].intValue[0] == 0x1401):
+                                var_type = "GLubyte"
+                                var_size = 1
+                                pack_type = "B"
+
+                            else:
+                                raise Exception("unhandled glDrawElements element type 0x%x" % msg.args[2].intValue[0])
+
+                        var_size *= len(arg.intValue)
+
+                        # Using assets is specially important in the case of
+                        # glDrawElements, although is not special-cased here,
+                        # it will use whatever min/max check is done on integer
+                        # assets
+                        if ((use_assets_for_ints and
+                            (var_size > min_int_asset_size_in_bytes)) or
+                            (var_size > max_int_inlined_size_in_bytes)):
+                            # Store in a short-lived asset if for glDrawElements index
+                            # buffer and above the minimum asset size
+                            var_name = "global_const_int_ptr_0"
+                            asset_filename = "int_asset_%d" % num_allocated_vars
+                            preamble_strings.extend(allocate_asset(var_name,
+                                                                   asset_filename,
+                                                                   "const %s*" % var_type,
+                                                                   "global_AAsset_ptr_0",
+                                                                   string.join([struct.pack(pack_type, i) for i in arg.intValue],""),
+                                                                   global_decls))
+                            # This is a short-lived asset only used in this GL call, could
+                            # be freed after the call, but that complicates the asset
+                            # variable declaration, so we just free it the next time
+                            # an asset with this name is allocated
+
+                        else:
+                            # XXX This can be moved to a local for glDrawElements
+                            #     only, but would that make things harder for the
+                            #     inliner?
+                            var_name = "global_int_ptr_%d" % num_allocated_vars
+                            global_decls.append("static %s %s[%d] = {%s}" %
+                                        (var_type, var_name , len(arg.intValue),
+                                         string.join([str(i) for i in arg.intValue], ", ")))
                 args_strings.append(var_name)
                 num_allocated_vars += 1
 
@@ -1103,7 +1201,7 @@ def main():
                     # XXX Change this to use the global pointer?
                     arg_name = "local_char_ptr_%d" % num_allocated_vars
                     if ("\n" in arg.charValue[0]):
-                        initializer = '"\\\n  %s\\n"' % arg.charValue[0].replace("\n", "\\\n  ")
+                        initializer = '"\\\n  %s\\n"' % arg.charValue[0].replace("\n", "\\n\\\n  ")
                     else:
                         initializer = '"%s"' % arg.charValue[0]
 
@@ -1229,13 +1327,16 @@ def main():
     logger.info("Writing code")
 
     # Generate some global declarations only known at trace end time
-    global_decls.append("static const GLsizei max_viewport_width  = %d" % max_viewport_width)
-    global_decls.append("static const GLsizei max_viewport_height = %d" % max_viewport_height)
-    global_decls.append("static const GLsizei max_scissor_width  = %d" % max_scissor_width)
-    global_decls.append("static const GLsizei max_scissor_height = %d" % max_scissor_height)
+    # Note some traces don't have scissor calls, so always use the maximum of both
+    egl_width = max(max_viewport_width, max_scissor_width)
+    egl_height = max(max_viewport_height, max_scissor_height)
+    global_decls.append("static const GLsizei max_viewport_width  = %d" % egl_width)
+    global_decls.append("static const GLsizei max_viewport_height = %d" % egl_height)
+    global_decls.append("static const GLsizei max_scissor_width  = %d" % egl_width)
+    global_decls.append("static const GLsizei max_scissor_height = %d" % egl_height)
     # These are exposed to the EGL surface creation
-    global_decls.append("int egl_width  = %d" % max_scissor_width)
-    global_decls.append("int egl_height = %d" % max_scissor_height)
+    global_decls.append("int egl_width  = %d" % egl_width)
+    global_decls.append("int egl_height = %d" % egl_height)
 
     # Generate the global declarations
     for decl in global_decls:
@@ -1268,12 +1369,31 @@ def main():
 
     logger.info("Done")
 
-
 if (__name__ == "__main__"):
     logging_format = "%(asctime).23s %(levelname)s:%(filename)s(%(lineno)d) [%(thread)d]: %(message)s"
 
     logger_handler = logging.StreamHandler()
     logger_handler.setFormatter(logging.Formatter(logging_format))
     logger.addHandler(logger_handler)
+    logger.setLevel(logging.INFO)
+
+    # Param 1 is trace name
+    if (len(sys.argv) > 1):
+        trace_filepath = sys.argv[1]
+
+    # Param 2 is output root directory (for assets, etc),
+    if (len(sys.argv) > 2):
+        output_dir = sys.argv[2]
+
+    # Param 3 is the OpenGL context index to trace
+    if (len(sys.argv) > 3):
+        gl_contexts_to_trace = [int(item) for item in sys.argv[3].split(",")]
+
+    assets_dir=os.path.join(output_dir, "assets")
+
+    logger.info("Tracing file %s" % trace_filepath)
+    logger.info("Output dir %s" % output_dir)
+    logger.info("Assets dir %s" % assets_dir)
+    logger.info("Tracing context %s" % gl_contexts_to_trace)
 
     main()

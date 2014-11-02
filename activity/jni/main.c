@@ -63,7 +63,7 @@ struct engine {
     const ASensor* accelerometerSensor;
     ASensorEventQueue* sensorEventQueue;
 
-    int animating;
+    bool animating;
     EGLDisplay display;
     EGLSurface surface;
     EGLContext context;
@@ -101,6 +101,8 @@ bool capture_compressed = true;
 // OpenGL state overrides
 
 // Dither override (enable takes precedence over disable)
+// XXX Add other gl state overrides like max_viewport/scissor_width/height
+// (in case the trace didn't contain those calls)
 bool gl_enable_dither  = false;
 bool gl_disable_dither = false;
 
@@ -195,6 +197,15 @@ EGLAttributeInfo egl_surface_attribute_infos[] = {
 
     MAKE_EGL_ATTRIBUTE_INFO(EGL_SWAP_BEHAVIOR),
     MAKE_EGL_ATTRIBUTE_INFO(EGL_MULTISAMPLE_RESOLVE),
+};
+
+EGLAttributeInfo egl_context_attribute_infos[] = {
+    MAKE_EGL_ATTRIBUTE_INFO(EGL_CONFIG_ID),
+
+    MAKE_EGL_ATTRIBUTE_INFO(EGL_CONTEXT_CLIENT_TYPE),
+    MAKE_EGL_ATTRIBUTE_INFO( EGL_CONTEXT_CLIENT_VERSION),
+
+    MAKE_EGL_ATTRIBUTE_INFO( EGL_RENDER_BUFFER),
 };
 
 static int engine_log_egl_strings(EGLDisplay display, int logLevel)
@@ -308,6 +319,43 @@ static int engine_log_egl_surface(EGLDisplay display, EGLSurface surface, int lo
                 case EGL_VERTICAL_RESOLUTION:
                 case EGL_PIXEL_ASPECT_RATIO:
                     STRNCAT_LITERAL(configValueString, configValueStringLen, configValue, EGL_UNKNOWN);
+                break;
+            }
+            STRNCAT_LITERAL(configValueString, configValueStringLen, configValue, EGL_NOT_INITIALIZED);
+        }
+        else
+        {
+            strncpy(configValueString, "ERROR", configValueStringLen);
+            configValueString[sizeof(configValueString) - 1] = 0;
+        }
+        __android_log_print(logLevel, "native-activity", "\t\t%s: %d%s", pAttribInfo->name, configValue, configValueString);
+    }
+}
+
+static int engine_log_egl_context(EGLDisplay display, EGLContext context, int logLevel)
+{
+    int j;
+    for (j = 0; j < ARRAY_LENGTH(egl_context_attribute_infos); ++j)
+    {
+        const EGLAttributeInfo* pAttribInfo = &egl_context_attribute_infos[j];
+        // Catch the call returning EGL_TRUE but not filling in a value by
+        // initializing to EGL_NOT_INITIALIZED
+        EGLint configValue = EGL_NOT_INITIALIZED;
+        char configValueString[200] = "";
+        const int configValueStringLen = sizeof(configValueString);
+        if (eglQueryContext(display, context, pAttribInfo->value, &configValue))
+        {
+            switch (pAttribInfo->value)
+            {
+                case EGL_CONTEXT_CLIENT_TYPE:
+                    STRNCAT_LITERAL(configValueString, configValueStringLen, configValue, EGL_OPENGL_API);
+                    STRNCAT_LITERAL(configValueString, configValueStringLen, configValue, EGL_OPENGL_ES_API);
+                    STRNCAT_LITERAL(configValueString, configValueStringLen, configValue, EGL_OPENVG_API);
+                break;
+                case EGL_RENDER_BUFFER:
+                    STRNCAT_LITERAL(configValueString, configValueStringLen, configValue, EGL_BACK_BUFFER);
+                    STRNCAT_LITERAL(configValueString, configValueStringLen, configValue, EGL_SINGLE_BUFFER);
+                    STRNCAT_LITERAL(configValueString, configValueStringLen, configValue, EGL_NONE);
                 break;
             }
             STRNCAT_LITERAL(configValueString, configValueStringLen, configValue, EGL_NOT_INITIALIZED);
@@ -517,12 +565,6 @@ static int engine_init_display(struct engine* engine)
         goto done;
     }
 
-    EGLint context_attrib_list[] = {
-        EGL_CONTEXT_CLIENT_VERSION, 2,
-        EGL_NONE
-    };
-    context = eglCreateContext(display, config, EGL_NO_CONTEXT, context_attrib_list);
-    
     // Preserving the backbuffer for Android view apps is necessary since Android 3.0, 
     // on architectures supporting it (Imagination doesn't, Qualcomm and NVIDIA do)
     // @see http://android.googlesource.com/platform/frameworks/base.git/+/244ada1d35419b7be9de0fc833bb03955b725ffa%5E!/
@@ -535,6 +577,22 @@ static int engine_init_display(struct engine* engine)
     // Dump EGL surface information
     LOGI("EGL Surface %p information", surface);
     engine_log_egl_surface(display, surface, ANDROID_LOG_INFO);
+
+    EGLint context_attrib_list[] = {
+        EGL_CONTEXT_CLIENT_VERSION, 2,
+        EGL_NONE
+    };
+    context = eglCreateContext(display, config, EGL_NO_CONTEXT, context_attrib_list);
+
+    if (context == EGL_NO_CONTEXT)
+    {
+        LOGE("Unable to create the context, error 0x%x", eglGetError());
+        goto done;
+    }
+    
+    // Dump EGL context information
+    LOGI("EGL context %p information", context);
+    engine_log_egl_context(display, context, ANDROID_LOG_INFO);
 
     // Get the width & height in case the requested values were zero 
     // Do this only if they are zero, as Imagination is known to return always 
@@ -604,7 +662,6 @@ static int engine_init_display(struct engine* engine)
     {
         glDisable(GL_DITHER);
     }
-    clock_gettime(CLOCK_MONOTONIC, &g_frame_start_time);
 
     // glEnable(GL_CULL_FACE);
     // glDisable(GL_DEPTH_TEST);
@@ -718,43 +775,47 @@ static void engine_draw_frame(struct engine* engine) {
         return;
     }
 
-    LOGI("GL error is 0x%x", glGetError());
-    
-    if (stop_motion)
+    if (!stop_motion || (frame_limit % 3 == 0))
     {
-        // A tap is a few events, down + up
-        if (frame_limit % 3 == 0)
+        int input_adjusted_frame_limit = frame_limit;
+        if (stop_motion)
         {
-            draw(engine->app->activity->assetManager, 0x7FFFFFFF, frame_limit/3);
-            eglSwapBuffers(engine->display, engine->surface);
+            // A tap is a few events, down + up
+            input_adjusted_frame_limit = frame_limit / 3;
         }
-        draw_limit++;
-        frame_limit++;
+        
+        clock_gettime(CLOCK_MONOTONIC, &g_frame_start_time);
 
-        engine->animating = 0;
-    }
-    else
-    {
-        draw(engine->app->activity->assetManager, 0x7FFFFFFF, frame_limit);
+        draw(engine->app->activity->assetManager, 0x7FFFFFFF, input_adjusted_frame_limit);
+        LOGI("Frame %d GL error is 0x%x", input_adjusted_frame_limit, glGetError());
+
+        timespec_t frame_end_time;
+        clock_gettime(CLOCK_MONOTONIC, &frame_end_time);
+        timespec_t frame_delta = timespec_delta(g_frame_start_time, frame_end_time);
+        LOGI("Frame %d time is %3.3fms", input_adjusted_frame_limit, 
+                                         frame_delta.tv_nsec / 1000000.0);
+
+        // Before swapping, capture the frame if necessary
+        bool capture_this_frame = ((capture_frequency > 0) && 
+                                   ((input_adjusted_frame_limit % capture_frequency) == 0));
+        if (capture_this_frame)
+        {
+            capture_frame(engine->app->activity->internalDataPath);
+        }
+
+        // Swap this frame
         eglSwapBuffers(engine->display, engine->surface);
-        draw_limit++;
-        frame_limit++;
 
-        engine->animating = 1;
+        timespec_t swap_end_time;
+        clock_gettime(CLOCK_MONOTONIC, &swap_end_time);
+        timespec_t swap_delta = timespec_delta(g_frame_start_time, swap_end_time);
+        LOGI("Swap %d time is %3.3fms", input_adjusted_frame_limit, 
+                                        swap_delta .tv_nsec / 1000000.0);
     }
 
-    timespec_t frame_end_time;
-    clock_gettime(CLOCK_MONOTONIC, &frame_end_time);
-    timespec_t delta = timespec_delta(g_frame_start_time, frame_end_time);
-    
-    LOGI("Frame %d time is %3.3fms", frame_limit-1, (float) (delta.tv_nsec / 1000000.0));
-
-    // Capture the frame if necessary
-    if (((capture_frequency > 0) && (((frame_limit-1) % capture_frequency) == 0)))
-    {
-        capture_frame(engine->app->activity->internalDataPath);
-    }
-    clock_gettime(CLOCK_MONOTONIC, &g_frame_start_time);
+    draw_limit++;
+    frame_limit++;
+    engine->animating = !stop_motion;
 }
 
 /**
@@ -774,7 +835,7 @@ static void engine_term_display(struct engine* engine) {
         }
         eglTerminate(engine->display);
     }
-    engine->animating = 0;
+    engine->animating = false;
     engine->display = EGL_NO_DISPLAY;
     engine->context = EGL_NO_CONTEXT;
     engine->surface = EGL_NO_SURFACE;
@@ -790,7 +851,7 @@ static int32_t engine_handle_input(struct android_app* app, AInputEvent* event)
     if (AInputEvent_getType(event) == AINPUT_EVENT_TYPE_MOTION)
     {
         LOGI("Motion input");
-        engine->animating = 1;
+        engine->animating = true;
         engine->state.x = AMotionEvent_getX(event, 0);
         engine->state.y = AMotionEvent_getY(event, 0);
         return 1;
@@ -847,7 +908,7 @@ static void engine_handle_cmd(struct android_app* app, int32_t cmd) {
                         engine->accelerometerSensor);
             }
             // Also stop animating.
-            engine->animating = 0;
+            engine->animating = false;
             engine_draw_frame(engine);
             break;
     }

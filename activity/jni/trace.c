@@ -58,6 +58,12 @@
 #define GL_COMPRESSED_RGBA8_ETC2_EAC      0x9278
 #define GL_COMPRESSED_RGB8_ETC2           0x9274
 
+// From Desktop GL (SonicDash sends those (!))
+#define GL_MAX_SAMPLES                    0x8D57
+#define GL_ALPHA_TEST                     0x0BC0
+#define GL_POINT_BIT                      0x00000002
+#define GL_REPLACE_OLDEST_SUN             0x0003
+
 #ifndef GL_RGBA8
 #define GL_RGBA8 0x8058
 #endif
@@ -150,11 +156,43 @@ void *glMapBufferRange(GLenum target, GLintptr offset, GLsizeiptr length, GLbitf
 
 }
 
-void glVertexAttribPointerData(GLuint index,  GLint size,  GLenum type,  GLboolean normalized,  GLsizei stride,  const GLvoid * pointer)
+/**
+ * glVertexAttribPointerData is a fake call that Android inserts before glDrawXXXXX 
+ * to supply the glVertexAttribPointer data, see
+ * http://stackoverflow.com/questions/14382208/what-is-glvertexattribpointerdata
+ * http://androidxref.com/4.4_r1/xref/frameworks/native/opengl/libs/GLES_trace/src/gltrace_fixup.cpp#473
+ */
+void glVertexAttribPointerData(GLuint index,  GLint size,  GLenum type,  
+                               GLboolean normalized, GLsizei stride,  
+                               const GLvoid * pointer, int minIndex, int maxIndex)
 {
+    // For indexed geometry calls (eg glDrawElements) the buffer captured in 
+    // the trace only contains vertices present in the index buffer, we need
+    // to rebase the pointer so unrebased indices are still valid
+    // (another option would be to rebase the indices, but that is not possible
+    // if the index buffer is a buffer object - although probably minIndex is 
+    // zero in that case as the trace capture cannot get to the indices either - 
+    // or if any part of the shader pipeline acts differently depending on the 
+    // index value)
+
+    int rebaseInBytes = 0;
+    // Don't bother calculating the rebase if the buffer doesn't need to be rebased
+    if (minIndex != 0)
+    {
+        // Trace capture tightly packs the attributes in the buffer, the passed-in 
+        // stride is the original one, thus unreliable, calculate it
+        
+        // GL_FIXED and GL_FLOAT are size 4, the trace code generator should 
+        // catch invalid types at code generation time
+        int elementSize = (((type == GL_BYTE) || (type == GL_UNSIGNED_BYTE)) ? 1 : 
+                           (((type == GL_SHORT)|| (type == GL_UNSIGNED_SHORT)) ? 2 : 4));
+        rebaseInBytes = minIndex * elementSize * size;
+    }
+ 
     // The trace stores a non-zero stride, but the attributes are actually
-    // tightly packed, ignore the stride and send zero instead.
-    glVertexAttribPointer(index, size, type, normalized, 0, pointer);
+    // tightly packed by the trace capture, ignore the stride and send zero instead.   
+    glVertexAttribPointer(index, size, type, normalized, 0, 
+                          (((char*) pointer) - rebaseInBytes));
 }
 
 void glScaledViewport(GLint x, GLint y, GLsizei width, GLsizei height);
@@ -162,7 +200,7 @@ void glScaledScissor(GLint x, GLint y, GLsizei width, GLsizei height);
 void glOverriddenDisable(GLenum cap);
 void glOverriddenEnable(GLenum cap);
 
-#include "../../_out/trace2.inc"
+#include "trace2.inc"
 
 /**
  * Function to scale viewport calls on framebuffer 0 by the ratio between

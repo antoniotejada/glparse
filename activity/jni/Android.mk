@@ -21,6 +21,9 @@ LOCAL_SRC_FILES := main.c trace.c intent.c
 # LOCAL_LDLIBS    := -llog -landroid -lEGL -lGLESv1_CM
 LOCAL_LDLIBS    := -llog -landroid -lEGL -lGLESv2 -lz
 LOCAL_STATIC_LIBRARIES := android_native_app_glue
+# Include the trace2.inc directory
+# Note NDK_OUT points to ./obj
+LOCAL_C_INCLUDES := $(NDK_OUT)/../
 
 include $(BUILD_SHARED_LIBRARY)
 
