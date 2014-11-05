@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 
 # Copyright 2014 Antonio Tejada
 #
@@ -63,8 +63,11 @@ import logging
 import operator
 import re
 import string
+import sys
 
 logger = logging.getLogger(__name__)
+
+trace_filepath = None
 
 # The code is an array of arrays of strings, the first argument of each line is
 # the function name, subsquent items are the arguments
@@ -712,7 +715,6 @@ def main():
         build_histogram(substring_histogram, frame_strings)
         logger.info(substring_histogram)
 
-        import sys
         sys.exit()
 
     frames = []
@@ -720,9 +722,7 @@ def main():
     global_decls = []
 
     # Read the code, extract functions, function prototypes and global declarations
-    parse_c_file("_out/trace.inc", frames, frame_prototypes, global_decls)
-    ##parse_c_file("_out/trace.kipo-all-frames.inc", frames, frame_prototypes, global_decls)
-    ##parse_c_file("_out/trace.gtavc.inc", frames, frame_prototypes, global_decls)
+    parse_c_file(trace_filepath, frames, frame_prototypes, global_decls)
 
     # XXX Simplify the code into a three-address code, turn inline operations into
     #     local variables
@@ -841,5 +841,7 @@ if (__name__ == "__main__"):
     logger_handler = logging.StreamHandler()
     logger_handler.setFormatter(logging.Formatter(logging_format))
     logger.addHandler(logger_handler)
+
+    trace_filepath = sys.argv[1]
 
     main()

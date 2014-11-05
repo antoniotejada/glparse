@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 
 # Copyright 2014 Antonio Tejada
 #
@@ -312,6 +312,15 @@ def allocate_asset(asset_buffer_ptr, asset_filename, asset_buffer_ptr_type, asse
     else:
         # It's the first time we see this asset, generate code to create this
         # asset variable
+        # XXX Note this fails when the asset is recycled across types in two ways:
+        #     - it may not declare the buffer pointer variable
+        #     - it overwrites a live pointer (so the asset really has to
+        #       have a different name, not enough with declaring the buffer pointer)
+        #     Additionally, all assets with delayed deallocation should have
+        #     different namespaces or it will fail too (eg textures with int pointers
+        #     and vertex buffers with int pointers, if such thing exists).
+        #     The solution is to use a per-resource type asset and buffer pointer, eg
+        #     global_int_ptr_texture_0, global_int_ptr_index_0, etc
         global_decls.append("AAsset* %s = NULL" % asset_variable_ptr)
         global_decls.append("%s %s = NULL" % (asset_buffer_ptr_type, asset_buffer_ptr))
     allocated_assets.add(asset_variable_ptr)
@@ -556,13 +565,6 @@ def main():
     code = []
     code_frames = [code]
     global_decls = []
-    # Add the global declarations for the temporary asset buffer pointers
-    # XXX Stop special-handling these?
-    #     They conflict when fully inlining insead of using assets or viceversa?
-    global_decls.append("const GLfloat* global_const_float_ptr_0")
-    global_decls.append("const GLchar* global_const_char_ptr_0")
-    ## global_decls.append("const GLint* global_const_int_ptr_0")
-
 
     # XXX These should probably be in some state-dependent table so it gets
     #     switched in and out (or in some framebuffer-dependent state?)
@@ -1018,13 +1020,16 @@ def main():
                 if ((use_assets_for_floats and
                     (len(arg.floatValue) > min_float_asset_size_in_floats)) or
                     (len(arg.floatValue) > max_float_inlined_size_in_floats)):
-                    arg_name = "global_const_float_ptr_0"
+                    arg_name = "global_float_ptr_F"
                     asset_filename = "float_asset_%d" % num_allocated_vars
+
+                    # Allocate one asset specifically for floats, since the pointer
+                    # variable declaration is keyed off the asset variable name
 
                     preamble_strings.extend(allocate_asset(arg_name,
                                                            asset_filename,
                                                            "float*",
-                                                           "global_AAsset_ptr_0",
+                                                           "global_AAsset_ptr_F",
                                                            string.join([struct.pack("f", f) for f in arg.floatValue],""),
                                                            global_decls))
 
@@ -1049,22 +1054,25 @@ def main():
                     asset_filename = "int_asset_%d" % num_allocated_vars
 
                     if (function_name == "glVertexAttribPointerData"):
-                        arg_name = "global_const_int_ptr_%d" % (msg.args[0].intValue[0]+1)
+                        arg_name = "global_const_int_ptr_%d" % msg.args[0].intValue[0]
+
                         preamble_strings.extend(allocate_asset(arg_name,
                                                                asset_filename,
                                                                "const unsigned int*",
-                                                               "global_AAsset_ptr_%d" % (msg.args[0].intValue[0]+1),
+                                                               "global_AAsset_ptr_%d" % msg.args[0].intValue[0],
                                                                arg.rawBytes[0],
                                                                global_decls))
                         # The asset will be freed when it's allocated again with
                         # that name
                         # XXX Need to free the assets at the end of the trace
                     else:
-                        arg_name = "global_const_int_ptr_0"
+                        arg_name = "global_const_int_ptr_I"
+                        # Allocate one asset specifically for ints, since the pointer
+                        # variable declaration is keyed off the asset variable name
                         preamble_strings.extend(allocate_asset(arg_name,
                                                                asset_filename,
                                                                "const unsigned int*",
-                                                               "global_AAsset_ptr_0",
+                                                               "global_AAsset_ptr_I",
                                                                arg.rawBytes[0],
                                                                global_decls))
                         # This is a short-lived asset only used in this GL call, could
@@ -1152,12 +1160,14 @@ def main():
                             (var_size > max_int_inlined_size_in_bytes)):
                             # Store in a short-lived asset if for glDrawElements index
                             # buffer and above the minimum asset size
-                            var_name = "global_const_int_ptr_0"
+                            var_name = "global_const_int_ptr_I"
                             asset_filename = "int_asset_%d" % num_allocated_vars
+                            # Allocate one asset specifically for ints, since the pointer
+                            # variable declaration is keyed off the asset variable name
                             preamble_strings.extend(allocate_asset(var_name,
                                                                    asset_filename,
                                                                    "const %s*" % var_type,
-                                                                   "global_AAsset_ptr_0",
+                                                                   "global_AAsset_ptr_I",
                                                                    string.join([struct.pack(pack_type, i) for i in arg.intValue],""),
                                                                    global_decls))
                             # This is a short-lived asset only used in this GL call, could
@@ -1186,13 +1196,15 @@ def main():
                 # ignored across pointers)
                 if (use_assets_for_shaders):
                     asset_filename = "char_asset_%d" % num_allocated_vars
-                    arg_name = "global_const_char_ptr_0"
+                    arg_name = "global_const_char_ptr_C"
+                    # Allocate one asset specifically for chars, since the pointer
+                    # variable declaration is keyed off the asset variable name
                     # Note we zero-terminate the string as required by
                     # glSetShaderSource when length is NULL
                     preamble_strings.extend(allocate_asset(arg_name,
                                                            asset_filename,
                                                            "GLchar const *",
-                                                           "global_AAsset_ptr_0",
+                                                           "global_AAsset_ptr_C",
                                                            arg.charValue[0] + "\0",
                                                            global_decls))
                     # glSetShaderSource requires a pointer to pointer
