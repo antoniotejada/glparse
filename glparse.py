@@ -56,8 +56,11 @@ PROTOBUFF_DIR = "external/google"
 sys.path.append(os.path.join(sys.path[0],PROTOBUFF_DIR))
 try:
     import gltrace_pb2
-except ImportError:
-    print ("The protobuff gltrace Python module %s/gltrace_pb2.py doesn't exist, generate it with\n"
+except ImportError as error:
+    print error
+    print ("Protobuf Python package not found (install with 'pip protobuf') or "
+           "the protobuff gltrace Python module %s/gltrace_pb2.py doesn't exist, "
+           "generate it with\n"
            "  %s/protoc %s/gltrace.proto --python_out=%s" %
               (PROTOBUFF_DIR, PROTOBUFF_DIR, PROTOBUFF_DIR, PROTOBUFF_DIR))
     # XXX Generate it automatically?
@@ -110,26 +113,6 @@ def xgetsize(filepath):
         size = os.path.getsize(filepath)
 
     return size
-
-def bytes_to_dwords(bytes):
-    """!
-
-    """
-    dwords = []
-    dword = 0
-    shift = 0
-    for byte in bytes:
-        dword += (ord(byte) << shift)
-        shift += 8
-        if (shift == 32):
-            dwords.append(dword)
-            shift = 0
-            dword = 0
-
-    if (shift != 0):
-        dwords.append(dword)
-
-    return dwords
 
 def update_translation_machinery_from_xml(translation_tables, translation_lookups):
     # XXX Pickle this to disk so it doesn't need to be parsed every time, takes 29s
@@ -687,6 +670,19 @@ def main():
                                "glVertexAttrib4fv"]) and not msg.args[1].isArray):
             # WAR glVertexAttrib4fv doesn't provide data, ignore it
             logger.warning("Ignoring glVertexAttribNv function as the trace doesn't provide the value")
+            logger.debug(msg)
+            continue
+
+        if ((function_name in ["glGetTexParameteriv", "glGetTexParameterfv"])):
+            # glGetTexParameterXX provides an int as destination instead of a pointer, ignore.
+            # XXX Is this an error in the capture or in glparse?
+            logger.warning("Ignoring glGetTexParameterXX function as the trace doesn't provide a pointer")
+            logger.debug(msg)
+            continue
+
+        if ((function_name in ["glGetVertexAttribfv"])):
+            # glGetVertexAttribfv(GL_CURRENT_VERTEX_ATTRIB, ) provides an int as destination instead of a pointer, ignore.
+            logger.warning("Ignoring glGetVertexAttribfv function as the trace doesn't provide a pointer")
             logger.debug(msg)
             continue
 

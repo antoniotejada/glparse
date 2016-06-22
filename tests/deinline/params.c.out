@@ -1,0 +1,24 @@
+// Src lines 6
+// Dest lines 5
+
+void a(int param_int_0);
+void f(int param_int_0);
+void subframe2(int param_int_0, int param_int_1);
+
+void a(int param_int_0)
+{
+    
+}
+
+void f(int param_int_0)
+{
+    subframe2(param_int_0, param_int_0);
+    subframe2(param_int_0, param_int_0);
+    subframe2(param_int_0, param_int_0);
+}
+
+void subframe2(int param_int_0, int param_int_1)
+{
+    a(param_int_0);
+    a(param_int_1);
+}

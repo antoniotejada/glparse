@@ -64,6 +64,15 @@
 #define GL_POINT_BIT                      0x00000002
 #define GL_REPLACE_OLDEST_SUN             0x0003
 
+// From Dekstop GL (Need for Speed sends those (?))
+#define GL_SAMPLE_ALPHA_TO_MASK_SGIS     0x809E
+#define GL_SAMPLE_MASK_SGIS 0x80A0
+#define GL_BLEND_COLOR_EXT 0x8005
+#define GL_GENERATE_MIPMAP_HINT_SGIS 0x8192
+#define GL_SAMPLE_MASK_VALUE_SGIS 0x80AA
+#define GL_SAMPLE_MASK_INVERT_SGIS 0x80AB
+
+
 #ifndef GL_RGBA8
 #define GL_RGBA8 0x8058
 #endif

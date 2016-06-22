@@ -1,0 +1,34 @@
+// Src lines 12
+// Dest lines 8
+//
+// Verify that common parameters in the call-sites are removed from the function
+// parameters
+//
+// Function calls a, c and e below use common parameters in all call-sites, so
+// shouldn't appear in the factored function parameters
+// The rest of the function calls should take parameters
+//
+
+void f1();
+void f2();
+void subframe2(int param_int_0, int param_int_1, int param_int_2);
+
+void f1()
+{
+    subframe2(1, 3, 5);
+}
+
+void f2()
+{
+    subframe2(0, 2, 4);
+}
+
+void subframe2(int param_int_0, int param_int_1, int param_int_2)
+{
+    a(0);
+    b(param_int_0);
+    c(2);
+    d(param_int_1);
+    e(4);
+    f(param_int_2);
+}

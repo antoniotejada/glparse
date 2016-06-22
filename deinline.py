@@ -40,7 +40,7 @@ Limitations:
   and that same pointer variable to single function calls.
   There's a parameter aliasing bug when a deinlined block contains both a pointer
   written to by reference and that same pointer being used directly afterwards,
-  in that case the pointer will be passed as two different paramters, a pointer
+  in that case the pointer will be passed as two different parameters, a pointer
   to pointer (for the reference) and a plain pointer.
   Because the plain pointer now lives in the stack, the pointer won't be modified
   by the pointer to pointer, hence the bug.
@@ -67,55 +67,57 @@ import sys
 
 logger = logging.getLogger(__name__)
 
-trace_filepath = None
-
 # The code is an array of arrays of strings, the first argument of each line is
-# the function name, subsquent items are the arguments
-def main():
+# the function name, subsequent items are the arguments
+# XXX Missing passing window size, increment
+def deinline(trace_filepath):
 
-    def print_code(frame_strings, frame_prototypes, frame_actual_parameters):
+    def dump_code(frame_strings, frame_prototypes, frame_actual_parameters):
+        lines = []
         for decl in global_decls:
-            print decl
+            lines.append(decl)
         # Add the function declarations, otherwise gcc guesses the types wrong
         # (doubles instead of floats, etc)
-        print
+        lines.append("")
         for (frame_index, frame_string) in enumerate(frame_prototypes):
-            print "%s;" % frame_prototypes[frame_index]
-        print
+            lines.append("%s;" % frame_prototypes[frame_index])
+        lines.append("")
         # Add the function definitions
         for (frame_index, frame_string) in enumerate(frame_strings):
-            print "%s" % frame_prototypes[frame_index]
-            print "{"
+            lines.append("%s" % frame_prototypes[frame_index])
+            lines.append("{")
             for c_index, c in enumerate(frame_string):
                 # Don't assume all functions have parameters, as generated functions
                 # can have all parameters removed
                 if ((len(frame_actual_parameters[frame_index][c_index]) > 0) and
                     (frame_actual_parameters[frame_index][c_index][0] == "-")):
-                    print "    %s" % char_to_function[c]
+                    lines.append("    %s" % char_to_function[c])
                 elif ((len(frame_actual_parameters[frame_index][c_index]) > 0) and
                       (frame_actual_parameters[frame_index][c_index][0] == "void")):
-                    print "    %s();" % char_to_function[c]
+                    lines.append("    %s();" % char_to_function[c])
                 elif (char_to_function[c] == "switch"):
                     # Don't semi-colon terminate switches
-                    print "    %s(%s)" % (char_to_function[c], string.join(frame_actual_parameters[frame_index][c_index], ", "))
+                    lines.append("    %s(%s)" % (char_to_function[c], string.join(frame_actual_parameters[frame_index][c_index], ", ")))
                 # XXX Don't special-case getVertexAttribPointer,
                 #     do it in a generic way, as fixing it here has limited
                 #     applicability (you still get warnings when an intermediate
                 #     function is called with two different parameter types)
                 elif (char_to_function[c] == "glVertexAttribPointer"):
                     # Cast to void to silence warnings
-                    print"    %s(%s, %s, %s, %s, %s, (GLvoid const*) %s);" % (
+                    lines.append("    %s(%s, %s, %s, %s, %s, (GLvoid const*) %s);" % (
                           "glVertexAttribPointer",
                           frame_actual_parameters[frame_index][c_index][0],
                           frame_actual_parameters[frame_index][c_index][1],
                           frame_actual_parameters[frame_index][c_index][2],
                           frame_actual_parameters[frame_index][c_index][3],
                           frame_actual_parameters[frame_index][c_index][4],
-                          frame_actual_parameters[frame_index][c_index][5])
+                          frame_actual_parameters[frame_index][c_index][5]))
                 else:
-                    print "    %s(%s);" % (char_to_function[c], string.join(frame_actual_parameters[frame_index][c_index], ", "))
-            print "}"
-            print
+                    lines.append("    %s(%s);" % (char_to_function[c], string.join(frame_actual_parameters[frame_index][c_index], ", ")))
+            lines.append("}")
+            lines.append("")
+
+        return lines
 
     def get_c_type_from_mangled_name(mangled_name):
         """!
@@ -129,7 +131,7 @@ def main():
             local_unsigned_int
             &param_AAssetManager_ptr
 
-        @todo check for "*" for completion's sake (eg "*param_AAssetManager_ptr")
+        @todo check for "*" for completeness's sake (eg "*param_AAssetManager_ptr")
         @todo check for more complex indexing
         """
 
@@ -185,8 +187,8 @@ def main():
 
     def parse_c_file(filename, frames, frame_prototypes, global_decls):
         """!
-        Parse a C file and return a list of functions, function prototypes and global
-        declarations.
+        Parse a C file and return a list of functions, function prototypes and
+        global declarations.
 
         @todo The parser should probably be more robust, or the code should
               be given already parsed or we should use pycparser or clang's
@@ -389,7 +391,7 @@ def main():
             for frame_index_and_start in suffix_array:
                 frame_index = frame_index_and_start >> 16
                 start = frame_index_and_start & 0xFFFF
-                assert None is logger.debug("%s (%d,%d)" % (frame_strings[frame_index][start:], frame_index, start))
+                assert None is logger.debug("%s (%d,%d)" % (repr(frame_strings[frame_index][start:]), frame_index, start))
 
         logger.debug("Building histogram with suffix array")
 
@@ -446,7 +448,7 @@ def main():
             except IndexError:
                 next_frame_string_length = 0
 
-            assert None is logger.debug("-- %s (%d,%d) --" % (frame_strings[frame_index][start:], frame_index, start))
+            assert None is logger.debug("-- %s (%d,%d) --" % (repr(frame_strings[frame_index][start:]), frame_index, start))
             assert None is logger.debug("prev: %d,%d [%d]" % (prev_frame_index, prev_start, prev_frame_string_length))
             assert None is logger.debug("next: %d,%d [%d]" % (next_frame_index, next_start, next_frame_string_length))
 
@@ -630,7 +632,7 @@ def main():
             frame_actual_parameters[frame_index] = new_frame_actual_parameters
 
         # Go through all the actual parameters (the actual parameters of each
-        # call-site), remove the common parameters from them
+        # call-site), remove parameters that are constant across all call-sites
         # XXX Also think about coalescing different formal parameters with the
         #     same actual parameter across all invocations into a single parameter
         # XXX Note not doing coalescing actually introduces the following pointer
@@ -705,8 +707,6 @@ def main():
         frame_prototypes.append("void subframe%d(%s)" % (len(frame_prototypes),
                                                          string.join(frame_formal_parameters, ", ")))
 
-    LOG_LEVEL=logging.INFO
-    logger.setLevel(LOG_LEVEL)
     logger.info("Starting")
 
     substring_histogram = {}
@@ -831,9 +831,11 @@ def main():
         replace_code(frame_strings, frame_prototypes, best_substring_and_count[0])
 
     # Print the new code
-    print_code(frame_strings, frame_prototypes, frame_actual_parameters)
+    lines = dump_code(frame_strings, frame_prototypes, frame_actual_parameters)
 
     logger.info("Final code lines: %d" % sum([len(s) for s in frame_strings]))
+
+    return lines
 
 if (__name__ == "__main__"):
     logging_format = "%(asctime).23s %(levelname)s:%(filename)s(%(lineno)d) [%(thread)d]: %(message)s"
@@ -842,6 +844,12 @@ if (__name__ == "__main__"):
     logger_handler.setFormatter(logging.Formatter(logging_format))
     logger.addHandler(logger_handler)
 
+    LOG_LEVEL = logging.INFO
+    logger.setLevel(LOG_LEVEL)
+
     trace_filepath = sys.argv[1]
 
-    main()
+    lines = deinline(trace_filepath)
+
+    for line in lines:
+        print line
