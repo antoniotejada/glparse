@@ -230,7 +230,11 @@ def deinline(trace_filepath):
                     continue
 
                 # Split into function and arguments
-                # XXX This doesn't work for multiline, etc
+                # XXX This doesn't work for multiline
+                # XXX This doesn't work for quotation marks (removes spaces)
+                #     This happens to LOGI instructions in the generated code
+                # XXX This breaks switch indentation (case, break and instructions
+                #     are set to the same indentation)
                 m = FUNCTION_PARAMETERS_REGEXP.match(line)
                 if (m is not None):
                     function_name = m.group('function_name').strip()
@@ -568,144 +572,271 @@ def deinline(trace_filepath):
             count = ((best_substring_and_factor[1] + len(substring)) / (len(substring) - 1))
             substring_histogram[substring] = count
 
-
     def replace_code(frame_strings, frame_prototypes, substring):
         """!
         Replace substring in frame_strings, appending the new code as a new frame_string
         and frame_prototype
         """
+
+        def replace_caller_occurrences_and_actual_parameters(frame_strings,
+                                                             frame_actual_parameters,
+                                                             substring,
+                                                             all_actual_parameters,
+                                                             common_parameters,
+                                                             best_substring_parameters,
+                                                             best_substring_function_char):
+
+            """!
+            Replace the occurrences of substring in frame_strings and gather all the
+            actual parameters, the common parameters and the formal parameters for
+            the best substring function
+
+            @param[in] frame_strings Strings for all the frames
+            @param[in] frame_actual_parameters Actual parameters for all the frames
+            @param[in] substring Best substring to replace in the frame_strings
+            @param[out] all_actual_parameters List of items referencing elements from
+                        in frame_actual_parameters
+            @param[out] common_parameters List with one item per actual parameter,
+                        None if the parameter is not common, parameter name otherwise
+            @param[out] best_substring_parameters Initial formal parameters of the
+                        substring function (all the actual parameters), calculated
+                        from the first occurrence of substring found in frame_strings
+            @param[in] best_substring_function_char unichar assigned to the new
+                       function for substring.
+
+            @return None
+            @exception None
+            """
+
+            best_substring_len = len(substring)
+            # Go through each frame, see if the best substring occurs there, if so
+            # collect the parameters used on every instruction in the occurrence and
+            # replace the occurrence with a function call to the substring's new
+            # function (note the best substring can appear several times in a single
+            # frame)
+            # XXX Should be able to use the suffix array to find all the positions
+            #     to substitute, remove them and append the new substring incrementally
+            #     to the suffix array
+            for (frame_index, frame_string) in enumerate(frame_strings):
+                i = 0
+                frame_string_len = len(frame_string)
+                # Speculatively collect frame_string and its actual parameters into
+                # new_frame_string in case frame_string contains the substring
+                new_frame_string = []
+                new_frame_actual_parameters = []
+                old_frame_actual_parameters = frame_actual_parameters[frame_index]
+                while (i < frame_string_len):
+                    # Don't bother doing a substring comparison if this frame cannot
+                    # fit the substring
+                    if ((i + best_substring_len > frame_string_len) or
+                        (substring != frame_string[i:best_substring_len+i])):
+                        # The substring doesn't start in this instruction of the frame,
+                        # speculatively add this instruction to the new frame in case
+                        # the substring is later found (or was already found) in this
+                        # frame and we need to replace the call-sites
+                        new_frame_string.append(frame_string[i])
+                        new_frame_actual_parameters.append(old_frame_actual_parameters[i])
+                        i += 1
+
+                    else:
+                        # The substring appears in this frame, gather the parameters
+                        # used in this occurrence, replace the occurrence with a call
+                        # to the substring's new function
+
+                        this_best_substring_parameters = old_frame_actual_parameters[i:best_substring_len+i]
+                        if (len(best_substring_parameters) == 0):
+                            # Initially the new function takes as parameters each parameter
+                            # of each function in the code being replaced, this will
+                            # be optimized below to remove the parameters that are common
+                            # across call-sites
+                            # The code and actual parameters are "the same" in all
+                            # occurrences, it's enough with setting this to the first
+                            # occurrence found, common parameters will be properly
+                            # removed later
+                            # XXX There's an innocuous corner case that causes
+                            #     the trace to be different depending on which
+                            #     substring occurrence is used: when the occurrences
+                            #     contain invocations to functions taking void*
+                            #     parameters, it can happen that the substring
+                            #     is invoked with an int* in one occurrence and
+                            #     with a char* in another.
+                            #     This happens with glVertexAttribPointerData,
+                            #     glVertexAttribPointer,....
+                            #     It's not clear if this should be fixed in the
+                            #     code generator so it does a casting to void*,
+                            #     or here so it assumes that multiple types
+                            #     mean void*
+                            #     This issue is minor because it just causes a
+                            #     compiler warning because of mixing pointer types.
+                            best_substring_parameters.extend(this_best_substring_parameters)
+                        # Flatten all the actual parameters into a single dimension
+                        # list
+                        actual_parameters = [param for params in this_best_substring_parameters for param in params]
+                        new_frame_actual_parameters.append(actual_parameters)
+                        # Keep a reference to those so we can remove the parameters
+                        # that are common
+                        all_actual_parameters.append(actual_parameters)
+
+                        # Set to None any accumulated common parameter that doesn't
+                        # match the one used in this occurrence
+                        for param_index, param in enumerate(actual_parameters):
+                            try:
+                                if (common_parameters[param_index] != param):
+                                    common_parameters[param_index] = None
+                            except IndexError:
+                                common_parameters.append(param)
+
+                        new_frame_string.append(best_substring_function_char)
+
+                        i += best_substring_len
+
+                frame_strings[frame_index] = string.join(new_frame_string, "")
+                frame_actual_parameters[frame_index] = new_frame_actual_parameters
+
+        def optimize_caller_actual_parameters(all_actual_parameters, common_parameters):
+            """!
+            Find an optimized actual parameter set and replace all the call-sites
+            with that set
+
+            @param[in,out] all_actual_parameters list of lists with parameter names
+                           for each occurrence of substring in frame_strings
+                           Each list is actually a reference to frame_actual_parameters
+                           for the new function call
+
+            @param[in,out] common_parameters Parameter names for the i-th common
+                           parameters (or None if the i-th parameter is not common)
+            """
+            # Go through all the actual parameters (the actual parameters of each
+            # call-site), remove parameters that are common across all call-sites
+            # XXX Also think about coalescing different formal parameters with the
+            #     same actual parameter across all invocations into a single parameter
+            # XXX Note not doing coalescing actually introduces the following pointer
+            #     aliasing bug:
+            #       openAsset(pMgr, "filename", &pAsset)
+            #       getAssetBuffer(pAsset,
+            #     is deinlined as
+            #       void subframe(pMgr, &pAsset, param_AAsset_ptr, param_AAsset_ptr_ptr)
+            #           openAsset(pMgr, "filename", param_AAsset_ptr_ptr)
+            #           getAssetBuffer(param_AAsset_ptr
+            #     Note how getAssetBuffer calls using a temporary variable that is no
+            #     longer updated by the call to openAsset
+            #     Once coalescing is added it should be done in an aliasing-aware
+            #     way
+            for actual_parameters in all_actual_parameters:
+                removed_params = 0
+                assert(len(actual_parameters) == len(common_parameters))
+                for param_index, param in enumerate(common_parameters):
+                    # Note that local variables or parameters still need to be passed
+                    # as parameters even if they are common to all callers
+                    # XXX This could also do aliasing avoidance for the case described
+                    #     above by replacing aliased parameters (a variable and a pointer
+                    #     to it) with a reference to the variable and the pointer to
+                    #     the variable
+                    if ((param is not None) and not (re.match(".?local_|.?param", param))):
+                        del actual_parameters[param_index - removed_params]
+                        removed_params += 1
+
+                    else:
+                        # Simplify the condition for the code below in case this was
+                        # a local parameter
+                        common_parameters[param_index] = None
+                # In case all the actual parameters were removed, add a void parameter
+                # at the end to prevent going out of sync when actual parameters are
+                # flattened if this function call is ever deinlined
+                # XXX Actually, fix the parameter handling so it deals properly with
+                #     empty sublists
+                if (len(actual_parameters) == 0):
+                    logger.debug("Adding dummy void parameter to empty actual parameter list")
+                    actual_parameters.append("void")
+                logger.debug("Actual parameters are %s" % actual_parameters)
+
+        def gather_callee_actual_and_formal_parameters(common_parameters,
+                                                       best_substring_actual_parameters,
+                                                       best_substring_formal_parameters):
+            """!
+            Gather the formal parameters, replace the substring's non-common
+            actual parameters with the formal parameters, leave the common actual
+            parameters the same
+
+            @param[in] common_parameters *list* of common parameter names or None
+                       if the given parameter is not common
+            @param[in,out] best_substring_actual_parameters *list* of the actual
+                        parameters for each line in the best substring
+            @param[in,out] frame_formal_parameters *list* of formal parameters for
+                       the best_substring function
+            """
+
+            # Update the new function body to use formal parameters for the non-common
+            # actual parameters, the common ones don't need to be passed as parameters
+            param_flat_index = 0
+            formal_param_index = 0
+            # Allocate actual parameters for each line inside the new function
+            for params in best_substring_actual_parameters:
+                for param_index, param in enumerate(params):
+                    # If this parameter is not common, swap it with a formal parameter
+                    if (common_parameters[param_flat_index] is None):
+                        # Prefix the parameter name with param_ so any code using it
+                        # is never regarded as a common parameter and always passed
+                        # as actual parameter
+                        params[param_index] = "param_%s_%d" % (
+                            get_mangled_type_from_mangled_name(param),
+                            formal_param_index)
+                        # Append this formal parameter
+                        param_type_and_name = "%s %s" % (get_c_type_from_mangled_name(param),
+                                                         params[param_index])
+                        best_substring_formal_parameters.append(param_type_and_name)
+                        formal_param_index += 1
+
+                    param_flat_index += 1
+
         #
         # Remove each occurrence of the best substring from the function strings
         # by replacing it with a new function
         #
-        best_substring_len = len(substring)
         char_to_function_len = len(char_to_function)
         best_substring_frame_index = len(frame_strings)
         best_substring_function_name = "subframe%d" % best_substring_frame_index
         best_substring_function_char = unichr(char_to_function_len)
+
+        # List of references to items in frame_actual_parameters
+        all_actual_parameters = []
+        # List of flattened actual parameters that are common across call-sites
+        # with None for entries that are not common
+        common_parameters = []
+        best_substring_actual_parameters = []
+
+        replace_caller_occurrences_and_actual_parameters(frame_strings,
+                                                         frame_actual_parameters,
+                                                         substring,
+                                                         all_actual_parameters,
+                                                         common_parameters,
+                                                         best_substring_actual_parameters,
+                                                         best_substring_function_char)
+
+        # Note all_actual_parameters is a list of references to items in
+        # frame_actual_parameters, so modifying the first updates the second too
+        optimize_caller_actual_parameters(all_actual_parameters, common_parameters)
+
+        best_substring_formal_parameters = []
+        gather_callee_actual_and_formal_parameters(common_parameters,
+                                                   best_substring_actual_parameters,
+                                                   best_substring_formal_parameters)
+
+        logger.debug("Formal and actual parameters for new function %s are: %s %s" %
+                     (best_substring_function_name,
+                      str(best_substring_formal_parameters),
+                      str(best_substring_actual_parameters)))
+
+        # Add the new function and its prototype to the global lists
+        frame_strings.append(substring)
+        frame_actual_parameters.append(best_substring_actual_parameters)
+        frame_prototypes.append("void subframe%d(%s)" % (len(frame_prototypes),
+                                                         string.join(best_substring_formal_parameters, ", ")))
         char_to_function[best_substring_function_char] = best_substring_function_name
         function_to_char[best_substring_function_name] = best_substring_function_char
 
-        all_actual_parameters = []
-        common_parameters = []
-        best_substring_parameters = None
-        # XXX Should be able to use the suffix array to find all the positions
-        #     to substitute, remove them and append the new substring incrementally
-        #     to the suffix array
-        for (frame_index, frame_string) in enumerate(frame_strings):
-            i = 0
-            frame_string_len = len(frame_string)
-            new_frame_string = []
-            new_frame_actual_parameters = []
-            old_frame_actual_parameters = frame_actual_parameters[frame_index]
-            while (i < frame_string_len):
-                if ((i + best_substring_len > frame_string_len) or
-                    (substring != frame_string[i:best_substring_len+i])):
-                    new_frame_string.append(frame_string[i])
-                    new_frame_actual_parameters.append(old_frame_actual_parameters[i])
-                    i += 1
-                else:
-                    # Initially the function takes as parameters each parameter
-                    # of each function in the code being replaced, this will
-                    # be optimized below to remove the parameters that are common
-                    # across call-sites
-                    best_substring_parameters = old_frame_actual_parameters[i:best_substring_len+i]
-                    actual_parameters = [param for params in best_substring_parameters for param in params]
-                    new_frame_actual_parameters.append(actual_parameters)
-                    # Keep a reference to those so we can remove the parameters
-                    # that are common
-                    all_actual_parameters.append(actual_parameters)
-
-                    # Set to None any unmatching parameters from the common parameters
-                    for param_index, param in enumerate(actual_parameters):
-                        try:
-                            if (common_parameters[param_index] != param):
-                                common_parameters[param_index] = None
-                        except IndexError:
-                            common_parameters.append(param)
-
-                    new_frame_string.append(unichr(char_to_function_len))
-
-                    i += best_substring_len
-
-            frame_strings[frame_index] = string.join(new_frame_string, "")
-            frame_actual_parameters[frame_index] = new_frame_actual_parameters
-
-        # Go through all the actual parameters (the actual parameters of each
-        # call-site), remove parameters that are constant across all call-sites
-        # XXX Also think about coalescing different formal parameters with the
-        #     same actual parameter across all invocations into a single parameter
-        # XXX Note not doing coalescing actually introduces the following pointer
-        #     aliasing bug:
-        #       openAsset(pMgr, "filename", &pAsset)
-        #       getAssetBuffer(pAsset,
-        #     is deinlined as
-        #       void subframe(pMgr, &pAsset, param_AAsset_ptr, param_AAsset_ptr_ptr)
-        #           openAsset(pMgr, "filename", param_AAsset_ptr_ptr)
-        #           getAssetBuffer(param_AAsset_ptr
-        #     Note how getAssetBuffer calls using a temporary variable that is no
-        #     longer updated by the call to openAsset
-        #     Once coalescing is added it should be done in an aliasing-aware
-        #     way
-        for actual_parameters in all_actual_parameters:
-            removed_params = 0
-            assert(len(actual_parameters) == len(common_parameters))
-            for param_index, param in enumerate(common_parameters):
-                # Note that local variables or parameters still need to be passed
-                # as parameters even if they are common to all callers
-                # XXX This could also do aliasing avoidance for the case described
-                #     above by replacing aliased parameters (a variable and a pointer
-                #     to it) with a reference to the variable and the pointer to
-                #     the variable
-                if ((param is not None) and not (re.match(".?local_|.?param", param))):
-                    del actual_parameters[param_index - removed_params]
-                    removed_params += 1
-                else:
-                    # Simplify the condition for the code below in case this was
-                    # a local parameter
-                    common_parameters[param_index] = None
-            # In case all the actual parameters were removed, add a void parameter
-            # at the end to prevent going out of sync when actual parameters are
-            # flattened if this function call is ever deinlined
-            # XXX Actually, fix the parameter handling so it deals properly with
-            #     empty sublists
-            if (len(actual_parameters) == 0):
-                logger.debug("Adding dummy void parameter to empty actual parameter list")
-                actual_parameters.append("void")
-            logger.debug("Actual parameters are %s" % actual_parameters)
-
-        # Update the new function body to use formal parameters for the non-common
-        # actual parameters, the common ones don't need to be passed as parameters
-        param_flat_index = 0
-        formal_param_index = 0
-        # Allocate actual parameters for each line inside the new function
-        frame_actual_parameters.append([])
-        frame_formal_parameters = []
-        for params in best_substring_parameters:
-            for param_index, param in enumerate(params):
-                # If this parameter is not common, swap it with a formal parameter
-                if (common_parameters[param_flat_index] is None):
-                    # Prefix the parameter name with param_ so any code using it
-                    # is never regarded as a common parameter and always passed
-                    # as actual parameter
-                    params[param_index] = "param_%s_%d" % (
-                        get_mangled_type_from_mangled_name(param),
-                        formal_param_index)
-                    # Append this formal parameter
-                    frame_formal_parameters.append(get_c_type_from_mangled_name(param) + " " + params[param_index])
-                    formal_param_index += 1
-
-                param_flat_index += 1
-            # Remove the constant parameters
-            frame_actual_parameters[best_substring_frame_index].append(params)
-
-        logger.debug("Formal parameters for new function %s are: %s" %
-                     (best_substring_function_name, str(frame_formal_parameters)))
-
-        # Add the new function and its prototype to the global lists of functions
-        frame_strings.append(substring)
-        frame_prototypes.append("void subframe%d(%s)" % (len(frame_prototypes),
-                                                         string.join(frame_formal_parameters, ", ")))
+        assert(len(frame_actual_parameters) == len(frame_strings))
+        assert(len(frame_prototypes) == len(frame_strings))
 
     logger.info("Starting")
 
@@ -734,11 +865,17 @@ def deinline(trace_filepath):
     # can always use enough formal parameters to be able to call it from any
     # different call-sites
 
-    # Convert frames into strings by assigning one char to each function
+    # Hash to convert from function name to function unichar
     function_to_char = {}
+    # Hash to convert from function unichr to function name
     char_to_function = {}
+    # List of strings with one unichar per function call, one string per item,
+    # indexed by frame index
     frame_strings = []
+    # List of lists of function parameters, one list per item, indexed by frame index
     frame_actual_parameters = []
+
+    # Convert frames into strings by assigning one char to each function
     for frame in frames:
         this_frame_string = []
         this_frame_actual_parameters = []
@@ -773,6 +910,7 @@ def deinline(trace_filepath):
     window_start_increment = 1
     window_size_increment = 0
 
+    # XXX Should this 1000 iterations be a parameter?
     for k in xrange(1000):
 
         # Find the number of occurrences of each possible substring

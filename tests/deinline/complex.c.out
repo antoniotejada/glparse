@@ -693,7 +693,7 @@ void subframe500(unsigned int param_unsigned_int_0, unsigned int param_unsigned_
 void subframe501(float * param_float_ptr_0, AAssetManager * param_AAssetManager_ptr_1, char * param_char_ptr_2, int param_int_3, AAssetManager * param_AAssetManager_ptr_4, char * param_char_ptr_5, int param_int_6, int param_int_7);
 void subframe502(float * param_float_ptr_0, int param_int_1, int param_int_2, int param_int_3, int param_int_4, int param_int_5);
 void subframe503(float * param_float_ptr_0, unsigned int param_unsigned_int_1, unsigned int param_unsigned_int_2, int param_int_3);
-void subframe504(const int * param_const_int_ptr_0, int param_int_1, int param_int_2);
+void subframe504(const char * param_const_char_ptr_0, int param_int_1, int param_int_2);
 void subframe505(float * param_float_ptr_0, AAssetManager * param_AAssetManager_ptr_1, char * param_char_ptr_2, int param_int_3, AAssetManager * param_AAssetManager_ptr_4, char * param_char_ptr_5, int param_int_6, int param_int_7);
 void subframe506(unsigned int param_unsigned_int_0);
 void subframe507(float * param_float_ptr_0, int param_int_1);
@@ -744,7 +744,7 @@ void subframe551(float * param_float_ptr_0, int param_int_1);
 void subframe552(float * param_float_ptr_0);
 void subframe553(float * param_float_ptr_0, AAssetManager * param_AAssetManager_ptr_1, char * param_char_ptr_2, int param_int_3, AAssetManager * param_AAssetManager_ptr_4, char * param_char_ptr_5, int param_int_6, int param_int_7);
 void subframe554(float * param_float_ptr_0);
-void subframe555(const int * param_const_int_ptr_0, int param_int_1, int param_int_2, unsigned int param_unsigned_int_3, unsigned int param_unsigned_int_4);
+void subframe555(const char * param_const_char_ptr_0, int param_int_1, int param_int_2, unsigned int param_unsigned_int_3, unsigned int param_unsigned_int_4);
 void subframe556(float * param_float_ptr_0);
 void subframe557(char * param_char_ptr_0, int param_int_1, int param_int_2, int param_int_3, int param_int_4);
 void subframe558(float * param_float_ptr_0, AAssetManager * param_AAssetManager_ptr_1, char * param_char_ptr_2, AAssetManager * param_AAssetManager_ptr_3, char * param_char_ptr_4);
@@ -30539,9 +30539,9 @@ void subframe503(float * param_float_ptr_0, unsigned int param_unsigned_int_1, u
     glGetError();
 }
 
-void subframe504(const int * param_const_int_ptr_0, int param_int_1, int param_int_2)
+void subframe504(const char * param_const_char_ptr_0, int param_int_1, int param_int_2)
 {
-    subframe586(param_const_int_ptr_0, param_int_1, param_int_2);
+    subframe586(param_const_char_ptr_0, param_int_1, param_int_2);
     glDisable(GL_SCISSOR_TEST);
     subframe500(GL_BLEND, global_unsigned_int_52);
 }
@@ -30921,9 +30921,9 @@ void subframe554(float * param_float_ptr_0)
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 16, (GLvoid const*) 0x685f1010);
 }
 
-void subframe555(const int * param_const_int_ptr_0, int param_int_1, int param_int_2, unsigned int param_unsigned_int_3, unsigned int param_unsigned_int_4)
+void subframe555(const char * param_const_char_ptr_0, int param_int_1, int param_int_2, unsigned int param_unsigned_int_3, unsigned int param_unsigned_int_4)
 {
-    subframe586(param_const_int_ptr_0, param_int_1, param_int_2);
+    subframe586(param_const_char_ptr_0, param_int_1, param_int_2);
     subframe500(param_unsigned_int_3, param_unsigned_int_4);
 }
 
