@@ -141,6 +141,8 @@ def deinline(trace_filepath):
             # (integer, float, enum or string)
             if (mangled_name[0] == '"'):
                 c_type = "char *"
+            elif (mangled_name[0] == "'"):
+                c_type = "char"
             elif (mangled_name.startswith("GL_")):
                 c_type = "unsigned int"
             else:
@@ -578,34 +580,30 @@ def deinline(trace_filepath):
         and frame_prototype
         """
 
-        def replace_caller_occurrences_and_actual_parameters(frame_strings,
-                                                             frame_actual_parameters,
-                                                             substring,
-                                                             all_actual_parameters,
-                                                             common_parameters,
-                                                             best_substring_parameters,
-                                                             best_substring_function_char):
+        def replace_caller_occurrences_and_gather_actual_parameters(frame_strings,
+                                                                    frame_actual_parameters,
+                                                                    substring,
+                                                                    all_actual_parameters,
+                                                                    best_substring_parameters,
+                                                                    best_substring_function_char):
 
             """!
             Replace the occurrences of substring in frame_strings and gather all the
             actual parameters, the common parameters and the formal parameters for
             the best substring function
 
-            @param[in] frame_strings Strings for all the frames
-            @param[in] frame_actual_parameters Actual parameters for all the frames
+            @param[in] frame_strings *list* of strings for all the frames
+            @param[in] frame_actual_parameters *list* with actual parameters for
+                       all the frames
             @param[in] substring Best substring to replace in the frame_strings
-            @param[out] all_actual_parameters List of items referencing elements from
-                        in frame_actual_parameters
-            @param[out] common_parameters List with one item per actual parameter,
-                        None if the parameter is not common, parameter name otherwise
-            @param[out] best_substring_parameters Initial formal parameters of the
-                        substring function (all the actual parameters), calculated
-                        from the first occurrence of substring found in frame_strings
-            @param[in] best_substring_function_char unichar assigned to the new
+            @param[out] all_actual_parameters *list* of items referencing elements
+                        from in frame_actual_parameters
+            @param[out] best_substring_parameters *list* with the Initial formal
+                        parameters of the substring function (all the actual parameters),
+                        calculated from the first occurrence of substring found
+                        in frame_strings
+            @param[in] best_substring_function_char *unichar* assigned to the new
                        function for substring.
-
-            @return None
-            @exception None
             """
 
             best_substring_len = len(substring)
@@ -614,9 +612,11 @@ def deinline(trace_filepath):
             # replace the occurrence with a function call to the substring's new
             # function (note the best substring can appear several times in a single
             # frame)
-            # XXX Should be able to use the suffix array to find all the positions
-            #     to substitute, remove them and append the new substring incrementally
-            #     to the suffix array
+            # XXX This takes 50% of the time on small window runs, should be able
+            #     to use the suffix array to at least find all the positions to
+            #     substitute, optionally removing them and appending the new
+            #     substring incrementally to the suffix array
+
             for (frame_index, frame_string) in enumerate(frame_strings):
                 i = 0
                 frame_string_len = len(frame_string)
@@ -644,6 +644,9 @@ def deinline(trace_filepath):
                         # to the substring's new function
 
                         this_best_substring_parameters = old_frame_actual_parameters[i:best_substring_len+i]
+                        # Flatten all the actual parameters into a single dimension
+                        # list
+                        actual_parameters = [param for params in this_best_substring_parameters for param in params]
                         if (len(best_substring_parameters) == 0):
                             # Initially the new function takes as parameters each parameter
                             # of each function in the code being replaced, this will
@@ -669,22 +672,11 @@ def deinline(trace_filepath):
                             #     This issue is minor because it just causes a
                             #     compiler warning because of mixing pointer types.
                             best_substring_parameters.extend(this_best_substring_parameters)
-                        # Flatten all the actual parameters into a single dimension
-                        # list
-                        actual_parameters = [param for params in this_best_substring_parameters for param in params]
+
                         new_frame_actual_parameters.append(actual_parameters)
                         # Keep a reference to those so we can remove the parameters
                         # that are common
                         all_actual_parameters.append(actual_parameters)
-
-                        # Set to None any accumulated common parameter that doesn't
-                        # match the one used in this occurrence
-                        for param_index, param in enumerate(actual_parameters):
-                            try:
-                                if (common_parameters[param_index] != param):
-                                    common_parameters[param_index] = None
-                            except IndexError:
-                                common_parameters.append(param)
 
                         new_frame_string.append(best_substring_function_char)
 
@@ -693,25 +685,64 @@ def deinline(trace_filepath):
                 frame_strings[frame_index] = string.join(new_frame_string, "")
                 frame_actual_parameters[frame_index] = new_frame_actual_parameters
 
-        def optimize_caller_actual_parameters(all_actual_parameters, common_parameters):
+        def optimize_caller_actual_parameters(all_actual_parameters, actual_parameter_indices):
             """!
             Find an optimized actual parameter set and replace all the call-sites
             with that set
 
-            @param[in,out] all_actual_parameters list of lists with parameter names
+            @param[in,out] all_actual_parameters *list* of lists with parameter names
                            for each occurrence of substring in frame_strings
                            Each list is actually a reference to frame_actual_parameters
-                           for the new function call
-
-            @param[in,out] common_parameters Parameter names for the i-th common
-                           parameters (or None if the i-th parameter is not common)
+                           for the new function cal
+            @param[out] actual_parameter_indices *list* of mappings from actual to
+                       formal parameter or -1 if that actual parameter is common
+                       across invocations and doesn't have a formal parameter
+                       The index can make reference to a previous parameter in
+                       case the formal parameter is not required because it was
+                       coalesced.
+                       Non -1 indices appear in the list monotonically increasing,
+                       but not tightly packed either because there were previous
+                       parameters common across invocations or coalesced (in both
+                       cases, that parameter index is skipped)
             """
             # Go through all the actual parameters (the actual parameters of each
-            # call-site), remove parameters that are common across all call-sites
-            # XXX Also think about coalescing different formal parameters with the
-            #     same actual parameter across all invocations into a single parameter
-            # XXX Note not doing coalescing actually introduces the following pointer
-            #     aliasing bug:
+            # call-site), remove parameters that are common across all call-sites,
+            # coalesce identical parameters into a single actual parameter
+
+            # Initialize the actual_parameter_indices to the unoptimized default
+            # This allows selectively removing optimizations
+            actual_parameter_indices.extend(xrange(len(all_actual_parameters[0])))
+
+            assert None is logger.debug("actual_parameter_indices after initialization %s" %
+                                actual_parameter_indices)
+
+            # Flag common parameters in actual_parameter_indices as -1
+            for param_index in actual_parameter_indices:
+                param = all_actual_parameters[0][param_index]
+                is_common = True
+                for actual_parameters in all_actual_parameters[1:]:
+                    if (actual_parameters[param_index] != param):
+                        is_common = False
+                        break
+
+                # Note that local variables or parameters still need to be passed
+                # as parameters even if they are common to all callers
+                # XXX This could also do aliasing avoidance for the case described
+                #     above by replacing aliased parameters (a variable and a pointer
+                #     to it) with a reference to the variable and the pointer to
+                #     the variable
+                # XXX The regexp check could be compiled, but it's not even 0.1%
+                # XXX The regexp check could be done before checking is_common
+                if (is_common and not (re.match(".?local_|.?param", param))):
+                    actual_parameter_indices[param_index] = -1
+
+            assert None is logger.debug("actual_parameter_indices after common detection %s" %
+                                actual_parameter_indices)
+
+            # Coalesce all parameters that are the same as a previous one in
+            # all the occurrences
+            # XXX Coalescing should be done in a pointer-aliasing aware way,
+            #     otherwise this bug pointer aliasing bug is not fixed
             #       openAsset(pMgr, "filename", &pAsset)
             #       getAssetBuffer(pAsset,
             #     is deinlined as
@@ -720,46 +751,115 @@ def deinline(trace_filepath):
             #           getAssetBuffer(param_AAsset_ptr
             #     Note how getAssetBuffer calls using a temporary variable that is no
             #     longer updated by the call to openAsset
-            #     Once coalescing is added it should be done in an aliasing-aware
-            #     way
-            for actual_parameters in all_actual_parameters:
-                removed_params = 0
-                assert(len(actual_parameters) == len(common_parameters))
-                for param_index, param in enumerate(common_parameters):
-                    # Note that local variables or parameters still need to be passed
-                    # as parameters even if they are common to all callers
-                    # XXX This could also do aliasing avoidance for the case described
-                    #     above by replacing aliased parameters (a variable and a pointer
-                    #     to it) with a reference to the variable and the pointer to
-                    #     the variable
-                    if ((param is not None) and not (re.match(".?local_|.?param", param))):
-                        del actual_parameters[param_index - removed_params]
-                        removed_params += 1
+            #     This is currently fixed in the generator by unifying those calls
+            #     into a single openAndGetAssetBuffer
 
-                    else:
-                        # Simplify the condition for the code below in case this was
-                        # a local parameter
-                        common_parameters[param_index] = None
-                # In case all the actual parameters were removed, add a void parameter
-                # at the end to prevent going out of sync when actual parameters are
-                # flattened if this function call is ever deinlined
-                # XXX Actually, fix the parameter handling so it deals properly with
-                #     empty sublists
-                if (len(actual_parameters) == 0):
-                    logger.debug("Adding dummy void parameter to empty actual parameter list")
+            for param_index in actual_parameter_indices:
+                if (param_index != -1):
+
+                    param = all_actual_parameters[0][param_index]
+
+                    # An actual parameter can be coalesced to a previous one
+                    # if they have matching names in this and the other of the
+                    # best substring occurrences (the names need to match inside
+                    # the same substring occurrence, but not across substring occurrences)
+                    # Eg for best substring occurrence 0
+                    #   a(param_int_0[0], param_int_1[1], param_int_0[2]);
+                    # and best substring occurrence 1
+                    #   a(param_int_2[0], param_int_3[1], param_int_2[2]);
+                    # parameter index [2] can be coalesced into parameter index [0]
+                    # so the new function only needs to take two parameters, not
+                    # three
+
+                    # Check if this parameter's name matches a previous parameter
+                    # in this substring occurrence
+                    actual_parameter_was_coalesced = False
+                    for prev_param_index in actual_parameter_indices[0:param_index - 1 + 1]:
+                        if (prev_param_index != -1):
+                            is_coalesceable = False
+                            logger.debug("Coalesce testing %s vs %s" %
+                                                 (all_actual_parameters[0][param_index],
+                                                  all_actual_parameters[0][prev_param_index])
+                                                 )
+                            if (param == all_actual_parameters[0][prev_param_index]):
+                                is_coalesceable = True
+                                # Check if the same parameter indices also match in
+                                # all the other substring occurrences
+                                for actual_parameters in all_actual_parameters[1:]:
+                                    logger.debug("Coalesce testing %s vs %s" %
+                                                 (actual_parameters[param_index],
+                                                  actual_parameters[prev_param_index])
+                                                 )
+                                    if (actual_parameters[param_index] != actual_parameters[prev_param_index]):
+                                        is_coalesceable = False
+                                        break
+
+                            if (is_coalesceable):
+                                # Flag as coalesceable to prev_param_index
+                                assert None is logger.debug("Coalescing parameter %s[%d] into %s[%d]" %
+                                                           (all_actual_parameters[0][param_index],
+                                                            param_index,
+                                                            all_actual_parameters[0][prev_param_index],
+                                                            prev_param_index))
+                                assert(prev_param_index != param_index)
+
+                                # coalesce to the previous occurrence
+                                actual_parameter_indices[param_index] = prev_param_index
+                                break
+
+            assert None is logger.debug("actual_parameter_indices after coalescing %s" % repr(actual_parameter_indices))
+
+            # Delete common parameters and coalesceable parameters, starting from
+            # the end to prevent indices from going out of sync
+            actual_parameter_index_index = len(actual_parameter_indices) - 1
+            for actual_parameter_index in reversed(actual_parameter_indices):
+                if ((actual_parameter_index == -1) or
+                    (actual_parameter_index != actual_parameter_index_index)):
+                    if (actual_parameter_index == -1):
+                        assert None is logger.debug("Removing constant parameter %s" %
+                                                    all_actual_parameters[0][actual_parameter_index_index])
+                    else :
+                        assert None is logger.debug("Removing coalesced parameter %s[%d]" %
+                                                    (all_actual_parameters[0][actual_parameter_index_index],
+                                                     actual_parameter_index_index))
+                    # The parameter was coalesced or is constant, can be deleted
+                    # from the actual parameters
+                    for actual_parameters in all_actual_parameters:
+                        del actual_parameters[actual_parameter_index_index]
+
+                actual_parameter_index_index -= 1
+
+            # In case all the actual parameters were removed, add a void parameter
+            # at the end to prevent going out of sync when actual parameters are
+            # flattened if this function call is ever deinlined
+            # XXX Actually, fix the parameter handling so it deals properly with
+            #     empty sublists
+            if (len(all_actual_parameters[0]) == 0):
+                for actual_parameters in all_actual_parameters:
                     actual_parameters.append("void")
-                logger.debug("Actual parameters are %s" % actual_parameters)
 
-        def gather_callee_actual_and_formal_parameters(common_parameters,
+            assert None is logger.debug("Actual parameters are %s" % all_actual_parameters)
+
+        def gather_callee_actual_and_formal_parameters(actual_parameter_indices,
                                                        best_substring_actual_parameters,
                                                        best_substring_formal_parameters):
             """!
             Gather the formal parameters, replace the substring's non-common
             actual parameters with the formal parameters, leave the common actual
-            parameters the same
+            parameters the same, coalesce parameters in the same invocation that
+            refer to the same parameter
 
-            @param[in] common_parameters *list* of common parameter names or None
-                       if the given parameter is not common
+            @param[out] actual_parameter_indices *list* of mappings from actual to
+                       formal parameter or -1 if that actual parameter is common
+                       across invocations and doesn't have a formal parameter
+                       The index can make reference to a previous parameter in
+                       case the formal parameter is not required because it was
+                       coalesced.
+                       Non -1 indices appear in the list monotonically increasing,
+                       but not tightly packed either because there were previous
+                       parameters common across invocations or coalesced (in both
+                       cases, that parameter index is skipped)
+
             @param[in,out] best_substring_actual_parameters *list* of the actual
                         parameters for each line in the best substring
             @param[in,out] frame_formal_parameters *list* of formal parameters for
@@ -769,23 +869,33 @@ def deinline(trace_filepath):
             # Update the new function body to use formal parameters for the non-common
             # actual parameters, the common ones don't need to be passed as parameters
             param_flat_index = 0
-            formal_param_index = 0
-            # Allocate actual parameters for each line inside the new function
+            formal_param_count = 0
+            actual_param_index_to_formal = {}
+            # Allocate actual parameters for each function call inside the new
+            # function body
             for params in best_substring_actual_parameters:
                 for param_index, param in enumerate(params):
                     # If this parameter is not common, swap it with a formal parameter
-                    if (common_parameters[param_flat_index] is None):
+                    actual_param_index = actual_parameter_indices[param_flat_index]
+                    if (actual_param_index != -1):
+                        # Translate from parameter indices with gaps to parameter
+                        # indices with no gaps
+                        formal_param_index = actual_param_index_to_formal.get(actual_param_index, formal_param_count)
                         # Prefix the parameter name with param_ so any code using it
                         # is never regarded as a common parameter and always passed
                         # as actual parameter
                         params[param_index] = "param_%s_%d" % (
                             get_mangled_type_from_mangled_name(param),
                             formal_param_index)
-                        # Append this formal parameter
-                        param_type_and_name = "%s %s" % (get_c_type_from_mangled_name(param),
-                                                         params[param_index])
-                        best_substring_formal_parameters.append(param_type_and_name)
-                        formal_param_index += 1
+
+                        # Only add non-coalesced parameters to the formal parameters
+                        if (param_flat_index == actual_param_index):
+                            # Append this formal parameter
+                            param_type_and_name = "%s %s" % (get_c_type_from_mangled_name(param),
+                                                             params[param_index])
+                            best_substring_formal_parameters.append(param_type_and_name)
+                            actual_param_index_to_formal[actual_param_index] = formal_param_count
+                            formal_param_count += 1
 
                     param_flat_index += 1
 
@@ -802,30 +912,29 @@ def deinline(trace_filepath):
         all_actual_parameters = []
         # List of flattened actual parameters that are common across call-sites
         # with None for entries that are not common
-        common_parameters = []
+        actual_parameter_indices = []
         best_substring_actual_parameters = []
 
-        replace_caller_occurrences_and_actual_parameters(frame_strings,
-                                                         frame_actual_parameters,
-                                                         substring,
-                                                         all_actual_parameters,
-                                                         common_parameters,
-                                                         best_substring_actual_parameters,
-                                                         best_substring_function_char)
+        replace_caller_occurrences_and_gather_actual_parameters(frame_strings,
+                                                                frame_actual_parameters,
+                                                                substring,
+                                                                all_actual_parameters,
+                                                                best_substring_actual_parameters,
+                                                                best_substring_function_char)
 
         # Note all_actual_parameters is a list of references to items in
         # frame_actual_parameters, so modifying the first updates the second too
-        optimize_caller_actual_parameters(all_actual_parameters, common_parameters)
+        optimize_caller_actual_parameters(all_actual_parameters, actual_parameter_indices)
 
         best_substring_formal_parameters = []
-        gather_callee_actual_and_formal_parameters(common_parameters,
+        gather_callee_actual_and_formal_parameters(actual_parameter_indices,
                                                    best_substring_actual_parameters,
                                                    best_substring_formal_parameters)
 
-        logger.debug("Formal and actual parameters for new function %s are: %s %s" %
-                     (best_substring_function_name,
-                      str(best_substring_formal_parameters),
-                      str(best_substring_actual_parameters)))
+        assert None is logger.debug("Formal and actual parameters for new function %s are: %s %s" %
+                                    (best_substring_function_name,
+                                     str(best_substring_formal_parameters),
+                                     str(best_substring_actual_parameters)))
 
         # Add the new function and its prototype to the global lists
         frame_strings.append(substring)
@@ -839,14 +948,6 @@ def deinline(trace_filepath):
         assert(len(frame_prototypes) == len(frame_strings))
 
     logger.info("Starting")
-
-    substring_histogram = {}
-    if (False):
-        frame_strings = [ 'aabaaa', 'cabaaaa', 'aaaabaaaa', 'caaaabaaa', 'caaaabaabb' ]
-        build_histogram(substring_histogram, frame_strings)
-        logger.info(substring_histogram)
-
-        sys.exit()
 
     frames = []
     frame_prototypes = []

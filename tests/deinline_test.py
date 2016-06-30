@@ -144,7 +144,7 @@ if __name__ == '__main__':
     import inspect
     for l in [logging.getLogger("deinline"), logging.getLogger(__name__)]:
         # deinline.py is very verbose, set logging to INFO level
-        l.setLevel(logging.INFO)
+        l.setLevel(logging.DEBUG)
         console_handler = logging.StreamHandler()
         console_formatter = logging.Formatter("%(asctime).19s %(levelname)s:%(filename)s(%(lineno)d) [%(threadName)s]: %(message)s")
         console_handler.setFormatter(console_formatter)

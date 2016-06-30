@@ -31,9 +31,10 @@ set NOSEOPTS=%NOSEOPTS% --processes=-1 --process-timeout=300
 
 rem all modules coverage
 rem Coverage requires "pip install coverage"
-rem set NOSEOPTS=%NOSEOPTS% --with-coverage --cover-html --cover-html-dir=_out\cover --cover-tests --cover-erase --cover-branches --cover-package=deinline
+rem set NOSEOPTS=%NOSEOPTS% --with-coverage --cover-html --cover-html-dir=_out\cover --cover-tests --cover-erase --cover-branches
 
 rem deinline module coverage
+rem XXX This fails and gives 1% coverage for unknown reasons, use all modules instead
 rem set NOSEOPTS=%NOSEOPTS% --with-coverage --cover-html --cover-html-dir=_out\cover --cover-tests --cover-erase --cover-branches --cover-package=deinline
 
 rem display collected tests with
