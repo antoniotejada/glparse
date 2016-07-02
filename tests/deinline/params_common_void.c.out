@@ -5,7 +5,6 @@
 // a void parameter
 //
 
-
 void f1(int param_int_0);
 void f2(int param_int_0);
 void subframe2();

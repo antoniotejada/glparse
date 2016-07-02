@@ -13,7 +13,6 @@
 // into a single openAndGetAssetBuffer
 // A better fix would be to do parameter coalescing in an aliasing-aware way
 
-
 void a(AAssetManager* param_AAssetManager_ptr_0);
 void f(AAssetManager* param_AAssetManager_ptr_0);
 void subframe2(AAssetManager * param_AAssetManager_ptr_0, char * param_char_ptr_1, AAsset * * param_AAsset_ptr_ptr_2, AAsset * param_AAsset_ptr_3);
@@ -22,7 +21,6 @@ void subframe3(AAssetManager * param_AAssetManager_ptr_0);
 void a(AAssetManager* param_AAssetManager_ptr_0)
 {
     AAsset* local_AAsset_ptr_0 = NULL;
-    
     subframe2(param_AAssetManager_ptr_0, "filename", &local_AAsset_ptr_0, local_AAsset_ptr_0);
     subframe2(param_AAssetManager_ptr_0, "filename1", &local_AAsset_ptr_0, local_AAsset_ptr_0);
     subframe2(param_AAssetManager_ptr_0, "filename2", &local_AAsset_ptr_0, local_AAsset_ptr_0);

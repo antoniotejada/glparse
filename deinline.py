@@ -72,7 +72,7 @@ logger = logging.getLogger(__name__)
 # XXX Missing passing window size, increment
 def deinline(trace_filepath):
 
-    def dump_code(frame_strings, frame_prototypes, frame_actual_parameters):
+    def dump_code(frame_strings, frame_prototypes, frame_actual_parameters, frame_local_decls, global_decls):
         lines = []
         for decl in global_decls:
             lines.append(decl)
@@ -86,6 +86,11 @@ def deinline(trace_filepath):
         for (frame_index, frame_string) in enumerate(frame_strings):
             lines.append("%s" % frame_prototypes[frame_index])
             lines.append("{")
+            # Note that only the original frames have local declarations, deinlined
+            # functions don't create new ones.
+            if (frame_index < len(frame_local_decls)):
+                for line in frame_local_decls[frame_index]:
+                    lines.append("    %s" % line)
             for c_index, c in enumerate(frame_string):
                 # Don't assume all functions have parameters, as generated functions
                 # can have all parameters removed
@@ -187,7 +192,7 @@ def deinline(trace_filepath):
 
         return c_type.replace(" ", "_").replace("*", "ptr")
 
-    def parse_c_file(filename, frames, frame_prototypes, global_decls):
+    def parse_c_file(filename, frames, frame_prototypes, frame_local_decls, global_decls):
         """!
         Parse a C file and return a list of functions, function prototypes and
         global declarations.
@@ -201,84 +206,110 @@ def deinline(trace_filepath):
         @see https://pypi.python.org/pypi/pycparser
         """
         FUNCTION_PARAMETERS_REGEXP = re.compile(r"\s*(?P<function_name>[^(]+)(?P<function_args>\(.*)")
+        LOCAL_DECLARATION_REGEXP = re.compile(r"(?P<local_type>.*?)(?P<local_name>local_[^=]*)=(?P<local_value>.*);$")
         with open(filename, "r") as f:
 
             brace_nest_level = 0
             for line in f:
 
                 # Ignore first-level braces and tag function end if needed
-                if (line[0] == "{"):
+                line = line.strip()
+                if (line == ""):
+                    assert None is logger.debug("Found empty line")
+
+                elif (line[0] == "{"):
                     brace_nest_level += 1
                     if (brace_nest_level == 1):
                         frame = []
-                        frame_prototypes.append(prev_line.strip())
+                        function_decls = []
+                        frame_prototypes.append(prev_line)
+                        assert None is logger.debug("Found function prototype %s" % repr(prev_line))
                         if (len(frames) == 0):
                             # Remove the last global_decl, as it's the prototype
                             # of the first function
                             global_decls.pop()
-                        continue
+
+                    assert None is logger.debug("Found opening brace %s" % repr(line))
+
                 elif (line[0] == "}"):
+                    assert None is logger.debug("Found closing brace %s" % repr(line))
                     brace_nest_level -= 1
                     if (brace_nest_level == 0):
                         # Finish this frame and append
                         frames.append(frame)
-                    continue
+                        frame_local_decls.append(function_decls)
 
-                if (brace_nest_level == 0):
+                elif (brace_nest_level == 0):
+                    assert None is logger.debug("Found global declaration %s" % repr(line))
                     prev_line = line
                     # Append to the global declarations until we've found a frame
                     if (len(frames) == 0):
-                        global_decls.append(line.strip())
-                    continue
+                        global_decls.append(line)
 
-                # Split into function and arguments
-                # XXX This doesn't work for multiline
-                # XXX This doesn't work for quotation marks (removes spaces)
-                #     This happens to LOGI instructions in the generated code
-                # XXX This breaks switch indentation (case, break and instructions
-                #     are set to the same indentation)
-                m = FUNCTION_PARAMETERS_REGEXP.match(line)
-                if (m is not None):
-                    function_name = m.group('function_name').strip()
-                    function_args_string = m.group('function_args').strip()
-
-                    function_args = []
-
-                    # Remove parenthesis/type casts
-                    paren_nest_level = 0
-                    arg = ""
-                    for c in function_args_string:
-                        append_arg = False
-                        if (c == "("):
-                            paren_nest_level += 1
-                        elif (c == ")"):
-                            append_arg = (paren_nest_level == 1)
-                            paren_nest_level -= 1
-                        elif (c == ","):
-                            append_arg = True
-                        elif (c.isspace()):
-                            pass
-                        elif (paren_nest_level == 1):
-                            arg = arg + c
-
-                        if ((append_arg) and (arg != "")):
-                            function_args.append(arg)
-                            arg = ""
-
-                    # Set functions with no arguments to void to differentiate
-                    # from non-functions
-                    if (len(function_args) == 0):
-                        function_args = ["void"]
+                elif (LOCAL_DECLARATION_REGEXP.match(line) is not None):
+                    # XXX This assumes that the local declarations can be
+                    #     moved above the code. This is the case with the
+                    #     trace generated one since it uses SSA names, but
+                    #     ideally it should only move declarations that are safe
+                    #     to move.
+                    logger.debug("Found local declaration %s" % repr(line))
+                    function_decls.append(line)
 
                 else:
-                    # Pass non-function calls verbatim
-                    function_name = line.strip()
-                    # XXX This is a hack so we don't cause lack of sync between
-                    #     lists and lists of lists when a list of lists contains
-                    #     an empty list
-                    function_args = ["-"]
+                    # Split into function and arguments
+                    # XXX This doesn't work for multiline
+                    # XXX This doesn't work for quotation marks (removes spaces)
+                    #     This happens to LOGI instructions in the generated code
+                    # XXX This breaks switch indentation (case, break and instructions
+                    #     are set to the same indentation)
+                    m = FUNCTION_PARAMETERS_REGEXP.match(line)
+                    if (m is not None):
+                        assert None is logger.debug("Found function call %s" % repr(line))
 
-                frame.append([function_name] + function_args)
+                        function_name = m.group('function_name').strip()
+                        function_args_string = m.group('function_args').strip()
+
+                        function_args = []
+
+                        # Remove parenthesis/type casts
+                        paren_nest_level = 0
+                        arg = ""
+                        for c in function_args_string:
+                            append_arg = False
+                            if (c == "("):
+                                paren_nest_level += 1
+                            elif (c == ")"):
+                                append_arg = (paren_nest_level == 1)
+                                paren_nest_level -= 1
+                            elif (c == ","):
+                                append_arg = True
+                            elif (c.isspace()):
+                                pass
+                            elif (paren_nest_level == 1):
+                                arg = arg + c
+
+                            if ((append_arg) and (arg != "")):
+                                function_args.append(arg)
+                                arg = ""
+
+                        # Set functions with no arguments to void to differentiate
+                        # from non-functions
+                        if (len(function_args) == 0):
+                            function_args = ["void"]
+
+                    else:
+                        assert None is logger.debug("Found assignment, comments... %s" % repr(line))
+                        # XXX This is passing comments as functions which will make
+                        #     harder to deinline
+
+                        # Pass non-function calls verbatim
+                        function_name = line
+                        # XXX This is a hack so we don't cause lack of sync between
+                        #     lists and lists of lists when a list of lists contains
+                        #     an empty list
+                        function_args = ["-"]
+
+                    frame.append([function_name] + function_args)
 
 
     def build_histogram_slow(substring_histogram, frame_strings):
@@ -397,7 +428,14 @@ def deinline(trace_filepath):
             for frame_index_and_start in suffix_array:
                 frame_index = frame_index_and_start >> 16
                 start = frame_index_and_start & 0xFFFF
-                assert None is logger.debug("%s (%d,%d)" % (repr(frame_strings[frame_index][start:]), frame_index, start))
+                logger.debug("%s (%d,%d)" % (repr(frame_strings[frame_index][start:]), frame_index, start))
+
+        # The suffix array can be empty if all the functions in the window are
+        # empty, the code below assumes the suffix array is not emtpy, so
+        # ignore the histogram and move to the next window
+        if (len(suffix_array) == 0):
+            logger.debug("Suffix Array empty, ignoring histogram")
+            return
 
         logger.debug("Building histogram with suffix array")
 
@@ -951,10 +989,11 @@ def deinline(trace_filepath):
 
     frames = []
     frame_prototypes = []
+    frame_local_decls = []
     global_decls = []
 
     # Read the code, extract functions, function prototypes and global declarations
-    parse_c_file(trace_filepath, frames, frame_prototypes, global_decls)
+    parse_c_file(trace_filepath, frames, frame_prototypes, frame_local_decls, global_decls)
 
     # XXX Simplify the code into a three-address code, turn inline operations into
     #     local variables
@@ -1070,7 +1109,7 @@ def deinline(trace_filepath):
         replace_code(frame_strings, frame_prototypes, best_substring_and_count[0])
 
     # Print the new code
-    lines = dump_code(frame_strings, frame_prototypes, frame_actual_parameters)
+    lines = dump_code(frame_strings, frame_prototypes, frame_actual_parameters, frame_local_decls, global_decls)
 
     logger.info("Final code lines: %d" % sum([len(s) for s in frame_strings]))
 

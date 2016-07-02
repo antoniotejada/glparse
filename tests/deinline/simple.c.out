@@ -7,7 +7,6 @@ void subframe2();
 
 void a()
 {
-    
 }
 
 void f()
