@@ -94,7 +94,7 @@ int egl_samples = 0;
 // Runtime configuration parameters
 int draw_limit = 0;
 int frame_limit = 0;
-bool stop_motion = false;
+bool stop_motion = true;
 int capture_frequency = 0;
 bool capture_compressed = true;
 

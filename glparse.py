@@ -31,38 +31,20 @@ import xml.etree.ElementTree
 
 logger = logging.getLogger(__name__)
 
-# Global variables updated from the command-line
-## trace_filepath = "_out/bmk_hw_layer_use_color_hw_layer.gltrace.gz"
-## trace_filepath"_out/com.amazon.kindle.otter.gltrace.gz"
-## trace_filepath"_out\contactsShowcaseAnimation.gltrace.gz"
-## trace_filepath"_out\bmk_hw_layer.gltrace.gz"
-## trace_filepath ="_out/bmk_bitmap.gltrace.gz"
-## trace_filepath ="_out/kipo.gltrace.gz"
-## trace_filepath ="_out/gl2morphcubeva.gltrace.gz"
-## trace_filepath ="_out/kipo-full.gltrace"
-## trace_filepath"_out\otter.gltrace.gz"
-## trace_filepath ="_out/GTAVC.gltrace.gz"
-## trace_filepath ="_out/venezia.gltrace.gz"
-## trace_filepath ="_out/glcap.gltrace"
-## trace_filepath ="_out/navigate-home.gltrace.gz"
-## trace_filepath ="_out/com.amazon.tv.launcher.notextures.gltrace.gz"
-## trace_filepath ="_out/com.amazon.tv.launcher.gltrace.gz"
-## trace_filepath = "_out/com.vectorunit.blue-60s-textures.gltrace.gz"
-trace_filepath = "_out/com.vectorunit.blue-60s-textures.gltrace.gz"
-output_dir="_out"
-gl_contexts_to_trace = [0]
-
 PROTOBUFF_DIR = "external/google"
 sys.path.append(os.path.join(sys.path[0],PROTOBUFF_DIR))
+# XXX This is so when invoked from the test dir it can find the protobuf, fix
+#     in a more elgant way
+sys.path.append(os.path.join(sys.path[0],"..", PROTOBUFF_DIR))
 try:
     import gltrace_pb2
 except ImportError as error:
-    print error
-    print ("Protobuf Python package not found (install with 'pip protobuf') or "
-           "the protobuff gltrace Python module %s/gltrace_pb2.py doesn't exist, "
-           "generate it with\n"
-           "  %s/protoc %s/gltrace.proto --python_out=%s" %
-              (PROTOBUFF_DIR, PROTOBUFF_DIR, PROTOBUFF_DIR, PROTOBUFF_DIR))
+    logger.error(error)
+    logger.error("Protobuf Python package not found (install with 'pip protobuf') or "
+                 "the protobuff gltrace Python module %s/gltrace_pb2.py doesn't exist, "
+                 "generate it with\n"
+                 "  %s/protoc %s/gltrace.proto --python_out=%s" %
+                 (PROTOBUFF_DIR, PROTOBUFF_DIR, PROTOBUFF_DIR, PROTOBUFF_DIR))
     # XXX Generate it automatically?
     sys.exit()
 
@@ -155,7 +137,12 @@ def update_translation_machinery_from_xml(translation_tables, translation_lookup
     logger.info("Updating translation machinery from xml")
 
     # pre-fill the translation tables with enums
-    with xopen("external/khronos/gl.xml", "r") as xml_file:
+    GL_XML_FILEPATH = "external/khronos/gl.xml"
+    # XXX This is so it can be executed from the tests directory, find a
+    #     way of making this transparent
+    if (not os.path.exists(GL_XML_FILEPATH)):
+        GL_XML_FILEPATH = os.path.join("..", GL_XML_FILEPATH)
+    with xopen(GL_XML_FILEPATH, "r") as xml_file:
         tree = xml.etree.ElementTree.parse(xml_file)
 
         # For every GLES 2 function, get the enumerants and fill the translation table
@@ -283,7 +270,7 @@ def update_translation_machinery_from_xml(translation_tables, translation_lookup
 num_allocated_vars = 0
 
 allocated_assets = set()
-def allocate_asset(asset_buffer_ptr, asset_filename, asset_buffer_ptr_type, asset_variable_ptr, asset_bytes, global_decls):
+def allocate_asset(assets_dir, asset_buffer_ptr, asset_filename, asset_buffer_ptr_type, asset_variable_ptr, asset_bytes, global_decls):
     """!
     Register the given asset and unregister
     """
@@ -339,8 +326,14 @@ def free_asset(asset_variable_ptr, asset_buffer_ptr):
     return ["closeAsset(%s)" % asset_variable_ptr,
             "%s = NULL" % asset_variable_ptr, "%s = NULL" % asset_buffer_ptr]
 
-def main():
+# XXX Missing other parameters like asset file vs. variable size threshold
+def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
     global num_allocated_vars
+
+    logger.info("Tracing file %s" % trace_filepath)
+    logger.info("Output dir %s" % output_dir)
+    logger.info("Assets dir %s" % assets_dir)
+    logger.info("Tracing contexts %s" % gl_contexts_to_trace)
 
     logger.info("Starting")
     trace = xopen(trace_filepath)
@@ -520,6 +513,7 @@ def main():
     use_human_friendly_gl_enums = True
 
     # XXX Use min/max asset sizes for shaders?
+    # XXX Move many of these to parameters or a config object
     use_assets_for_shaders = True
 
     use_assets_for_floats = True
@@ -1022,7 +1016,8 @@ def main():
                     # Allocate one asset specifically for floats, since the pointer
                     # variable declaration is keyed off the asset variable name
 
-                    preamble_strings.extend(allocate_asset(arg_name,
+                    preamble_strings.extend(allocate_asset(assets_dir,
+                                                           arg_name,
                                                            asset_filename,
                                                            "float*",
                                                            "global_AAsset_ptr_F",
@@ -1052,7 +1047,8 @@ def main():
                     if (function_name == "glVertexAttribPointerData"):
                         arg_name = "global_const_int_ptr_%d" % msg.args[0].intValue[0]
 
-                        preamble_strings.extend(allocate_asset(arg_name,
+                        preamble_strings.extend(allocate_asset(assets_dir,
+                                                               arg_name,
                                                                asset_filename,
                                                                "const unsigned int*",
                                                                "global_AAsset_ptr_%d" % msg.args[0].intValue[0],
@@ -1065,7 +1061,8 @@ def main():
                         arg_name = "global_const_int_ptr_I"
                         # Allocate one asset specifically for ints, since the pointer
                         # variable declaration is keyed off the asset variable name
-                        preamble_strings.extend(allocate_asset(arg_name,
+                        preamble_strings.extend(allocate_asset(assets_dir,
+                                                               arg_name,
                                                                asset_filename,
                                                                "const unsigned int*",
                                                                "global_AAsset_ptr_I",
@@ -1160,7 +1157,8 @@ def main():
                             asset_filename = "int_asset_%d" % num_allocated_vars
                             # Allocate one asset specifically for ints, since the pointer
                             # variable declaration is keyed off the asset variable name
-                            preamble_strings.extend(allocate_asset(var_name,
+                            preamble_strings.extend(allocate_asset(assets_dir,
+                                                                   var_name,
                                                                    asset_filename,
                                                                    "const %s*" % var_type,
                                                                    "global_AAsset_ptr_I",
@@ -1197,7 +1195,8 @@ def main():
                     # variable declaration is keyed off the asset variable name
                     # Note we zero-terminate the string as required by
                     # glSetShaderSource when length is NULL
-                    preamble_strings.extend(allocate_asset(arg_name,
+                    preamble_strings.extend(allocate_asset(assets_dir,
+                                                           arg_name,
                                                            asset_filename,
                                                            "GLchar const *",
                                                            "global_AAsset_ptr_C",
@@ -1347,37 +1346,60 @@ def main():
     global_decls.append("int egl_height = %d" % egl_height)
 
     # Generate the global declarations
+    lines = []
     for decl in global_decls:
-        print "%s;" % decl
-    print
+        lines.append("%s;" % decl)
+    lines.append("")
 
     # Generate each frame
     for (frame_count, code) in enumerate(code_frames):
-        print "void frame%s(AAssetManager* param_AAssetManager_ptr_0)" % frame_count
-        print "{"
+        lines.append("void frame%s(AAssetManager* param_AAssetManager_ptr_0)" % frame_count)
+        lines.append("{")
         for line in code:
-            print "    %s;" % line
-        print "}"
+            lines.append("    %s;" % line)
+        lines.append("}")
 
     # Generate the code that calls each frame
-    print "void draw(AAssetManager* param_AAssetManager_ptr_0, int draw_limit, int frame_limit)"
-    print "{"
-    print "    switch (frame_limit)"
-    print "    {"
+    lines.append("void draw(AAssetManager* param_AAssetManager_ptr_0, int draw_limit, int frame_limit)")
+    lines.append("{")
+    lines.append("    switch (frame_limit)")
+    lines.append("    {")
     for frame_index in xrange(len(code_frames)):
-        print "        case %d: " % frame_index
-        print "            frame%d(param_AAssetManager_ptr_0);" % frame_index
-        print "        break;"
-    print "        default: "
-    print '            LOGI("Reached frame %d end of replay, exiting", frame_limit);'
-    print '            exit(EXIT_SUCCESS);'
-    print "    }"
-    print "}"
-    print
+        lines.append("        case %d: " % frame_index)
+        lines.append("            frame%d(param_AAssetManager_ptr_0);" % frame_index)
+        lines.append("        break;")
+    lines.append("        default: ")
+    lines.append('            LOGI("Reached frame %d end of replay, exiting", frame_limit);')
+    lines.append('            exit(EXIT_SUCCESS);')
+    lines.append("    }")
+    lines.append("}")
+    lines.append("")
 
     logger.info("Done")
 
+    return lines
+
 if (__name__ == "__main__"):
+    ## trace_filepath = "_out/bmk_hw_layer_use_color_hw_layer.gltrace.gz"
+    ## trace_filepath"_out/com.amazon.kindle.otter.gltrace.gz"
+    ## trace_filepath"_out\contactsShowcaseAnimation.gltrace.gz"
+    ## trace_filepath"_out\bmk_hw_layer.gltrace.gz"
+    ## trace_filepath ="_out/bmk_bitmap.gltrace.gz"
+    ## trace_filepath ="_out/kipo.gltrace.gz"
+    ## trace_filepath ="_out/gl2morphcubeva.gltrace.gz"
+    ## trace_filepath ="_out/kipo-full.gltrace"
+    ## trace_filepath"_out\otter.gltrace.gz"
+    ## trace_filepath ="_out/GTAVC.gltrace.gz"
+    ## trace_filepath ="_out/venezia.gltrace.gz"
+    ## trace_filepath ="_out/glcap.gltrace"
+    ## trace_filepath ="_out/navigate-home.gltrace.gz"
+    ## trace_filepath ="_out/com.amazon.tv.launcher.notextures.gltrace.gz"
+    ## trace_filepath ="_out/com.amazon.tv.launcher.gltrace.gz"
+    ## trace_filepath = "_out/com.vectorunit.blue-60s-textures.gltrace.gz"
+    trace_filepath = "_out/com.vectorunit.blue-60s-textures.gltrace.gz"
+    output_dir = "_out"
+    gl_contexts_to_trace = [0]
+
     logging_format = "%(asctime).23s %(levelname)s:%(filename)s(%(lineno)d) [%(thread)d]: %(message)s"
 
     logger_handler = logging.StreamHandler()
@@ -1397,11 +1419,9 @@ if (__name__ == "__main__"):
     if (len(sys.argv) > 3):
         gl_contexts_to_trace = [int(item) for item in sys.argv[3].split(",")]
 
-    assets_dir=os.path.join(output_dir, "assets")
+    assets_dir = os.path.join(output_dir, "assets")
 
-    logger.info("Tracing file %s" % trace_filepath)
-    logger.info("Output dir %s" % output_dir)
-    logger.info("Assets dir %s" % assets_dir)
-    logger.info("Tracing context %s" % gl_contexts_to_trace)
+    lines = glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace)
 
-    main()
+    for line in lines:
+        print(line)

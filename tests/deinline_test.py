@@ -23,32 +23,18 @@ if __name__ == '__main__':
 
 import nose
 
-import errno
 import filecmp
 import glob
 import logging
 import os
-import string
-import types
 
+import common
 import deinline
 
 # Inform Nose that the tests can be split across processes
 _multiprocess_can_split_ = True
 
 logger = logging.getLogger(__name__)
-
-def makedirs(dirname):
-    """!
-    Identical to os.makedirs, but ignores already existing exceptions.
-    """
-
-    try:
-        os.makedirs(dirname)
-    except OSError, e:
-        # ignore already existing path exceptions
-        if e.errno != errno.EEXIST:
-            raise
 
 def count_lines_between_braces(lines):
     """!
@@ -75,109 +61,57 @@ def count_lines_between_braces(lines):
 
     return lineCount
 
-def declare_per_file_functions():
+TEST_FILES_FILEDIR = "deinline"
+OUTPUT_FILEDIR = "_out"
+
+@nose.tools.nottest
+def test_single_file(filename):
     """!
-    Declare as many test functions as files
-    This allows Nose to run them in parallel and give per-file errors
+    Test a single file given by the filename
     """
 
-    SNIPPETS_FILEDIR = "deinline"
-    OUTPUT_FILEDIR = "_out"
+    logger.info("Starting test for file %s" % filename)
 
-    def test_single_file(filename):
-        """!
-        Test a single file given by the filename
-        """
+    filepath = os.path.join(TEST_FILES_FILEDIR, filename)
+    outFiledir = os.path.join(TEST_FILES_FILEDIR, OUTPUT_FILEDIR)
+    oldOutFilepath = os.path.join(outFiledir, "old", filename)
+    newOutFiledir = os.path.join(outFiledir, "new")
+    newOutFilepath = os.path.join(newOutFiledir, filename)
 
-        logger.info("Starting test for file %s" % filename)
+    with open(filepath, "rb") as f:
+        lines = f.readlines()
+        srcLineCount = count_lines_between_braces(lines)
 
-        outFilename = "%s.out" % filename
-        filepath = os.path.join(SNIPPETS_FILEDIR, filename)
-        outFilepath = os.path.join(SNIPPETS_FILEDIR, outFilename)
-        newOutFiledir = os.path.join(SNIPPETS_FILEDIR, OUTPUT_FILEDIR)
-        newOutFilepath = os.path.join(newOutFiledir, outFilename)
+    lines = deinline.deinline(filepath)
+    dstLineCount = count_lines_between_braces(lines)
 
-        with open(filepath, "rb") as f:
-            lines = f.readlines()
-            srcLineCount = count_lines_between_braces(lines)
+    # Create the new dir if necessary, delete old content
+    common.remove(newOutFilepath)
+    common.makedirs(newOutFiledir)
 
-        lines = deinline.deinline(filepath)
-        dstLineCount = count_lines_between_braces(lines)
+    with open(newOutFilepath, "w") as f:
+        lines = ["// Src lines %d" % srcLineCount,
+                 "// Dest lines %d" % dstLineCount] + lines
+        for line in lines:
+            f.writelines([line, "\n"])
 
-        makedirs(newOutFiledir)
-
-        with open(newOutFilepath, "w") as f:
-            lines = ["// Src lines %d" % srcLineCount,
-                     "// Dest lines %d" % dstLineCount] + lines
-            f.write(string.join(lines, "\n"))
-
-        assert(filecmp.cmp(outFilepath, newOutFilepath, False))
-
-    # Sort the paths alphabetically to guarantee all the processes get the same
-    # filename-to-function-name mapping
-
-    filepaths = glob.glob(os.path.join(SNIPPETS_FILEDIR, "*.c"))
-
-    for index, filepath in enumerate(filepaths):
-        # Create a functor that captures the filename argument (can't use a
-        # lambda directly because it doesn't capture the value of the argument
-        # but the address)
-        fn_name = "test_file_%d" % index
-        filename = os.path.basename(filepath)
-
-        logger.debug("Creating test function %s for file %s" % (fn_name, filename))
-
-        wrapper = types.FunctionType(test_single_file.func_code,
-                                     test_single_file.func_globals,
-                                     fn_name,
-                                    (filename,),
-                                     test_single_file.func_closure)
-
-        # Add it to the module
-        setattr(sys.modules[declare_per_file_functions.__module__], fn_name, wrapper)
-
+    assert(filecmp.cmp(oldOutFilepath, newOutFilepath, False))
 
 # Note on multiprocess this function runs once on each test process
-declare_per_file_functions()
+filepaths = glob.glob(os.path.join(TEST_FILES_FILEDIR, "*.c"))
 
 if __name__ == '__main__':
-    import inspect
-    for l in [logging.getLogger("deinline"), logging.getLogger(__name__)]:
-        # deinline.py is very verbose, set logging to INFO level
-        l.setLevel(logging.DEBUG)
+    for l in [logging.getLogger("deinline"), logging.getLogger(__name__),
+              logging.getLogger('common')]:
+        l.setLevel(logging.INFO)
         console_handler = logging.StreamHandler()
         console_formatter = logging.Formatter("%(asctime).19s %(levelname)s:%(filename)s(%(lineno)d) [%(threadName)s]: %(message)s")
         console_handler.setFormatter(console_formatter)
         l.addHandler(console_handler)
 
-    # Run all the testXXXXX functions
-    testFunctions = inspect.getmembers(sys.modules['__main__'],
-                                       predicate=lambda obj: inspect.isfunction(obj) and obj.__name__.startswith("test"))
-    logger.debug("%d test functions found" % len(testFunctions))
-    for name, function in testFunctions:
-        logger.info("Testing function %s" % name)
-        function()
+    logging.getLogger("common").setLevel(logging.DEBUG)
 
-    # Run all the testXXXXX methods of the TestXXXX classes
-    try:
+common.declare_per_file_functions(filepaths, __name__, test_single_file)
 
-        testClasses = inspect.getmembers(sys.modules['__main__'],
-                                       predicate=lambda obj: inspect.isclass(obj) and obj.__name__.startswith("test"))
-
-        logger.debug("%d test classes found" % len(testClasses))
-        for className, cls in testClasses:
-            test = cls()
-
-            testMethods = inspect.getmembers(Test,
-                                             predicate=lambda obj: inspect.ismethod(obj) and obj.__name__.startswith("test"))
-
-            logger.debug("%d test methods found in class %s" % (len(testMethods), className))
-            for methodName, method in testMethods:
-                logger.debug("Testing method %s of class %s" % (methodName, className))
-                test.setUp()
-                method(test)
-                test.tearDown()
-
-    except NameError:
-        logger.debug("No running methods No Test class found")
-
+if (__name__ == '__main__'):
+    common.invoke_per_file_functions(__name__)

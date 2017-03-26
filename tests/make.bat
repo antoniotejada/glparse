@@ -11,7 +11,7 @@ rem Nose requires "pip install nose"
 rem set NOSEOPTS=--detailed-errors --debug=nose --nologcapture --stop --verbosity=4 --nocapture
 
 rem test debugging options
-rem set NOSEOPTS=--detailed-errors --debug=nose --nologcapture --stop --verbosity=4 --nocapture
+rem set NOSEOPTS=--detailed-errors --debug=nose --nologcapture --stop --verbosity=4 --nocapture --logging-level=DEBUG
 
 rem normal options, stop on first error, do INFO level logging
 set NOSEOPTS=--detailed-errors --stop --logging-level=INFO
