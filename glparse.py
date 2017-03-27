@@ -29,6 +29,8 @@ import struct
 import sys
 import xml.etree.ElementTree
 
+import utils
+
 logger = logging.getLogger(__name__)
 
 PROTOBUFF_DIR = "external/google"
@@ -47,54 +49,6 @@ except ImportError as error:
                  (PROTOBUFF_DIR, PROTOBUFF_DIR, PROTOBUFF_DIR, PROTOBUFF_DIR))
     # XXX Generate it automatically?
     sys.exit()
-
-def xopen(filepath, mode = 'rb', compresslevel=9):
-    # Guess from the filename whether to decompress or not
-    if (filepath.endswith(".gz")):
-        compressed = True
-    else:
-        compressed = False
-
-    if (compressed):
-        import gzip
-
-        # Gzipfile recommends compressed files to force binary for compatibility
-        newmode = mode
-        if ('b' not in newmode):
-            newmode += 'b'
-        # Remove universal newline flags, not supported by gzip
-        # Note opening for append produces the unexpected effect of creting a
-        # new gzip member, rather than resuming the previous compression.
-        newmode = newmode.replace('U', '')
-
-        file = gzip.open(filepath, newmode, compresslevel)
-
-    else:
-        import __builtin__
-        file = __builtin__.open(filepath, mode)
-
-    return file
-
-def xgetsize(filepath):
-    # Guess from the filename whether to decompress or not
-    if (filepath.endswith(".gz")):
-        compressed = True
-    else:
-        compressed = False
-
-    if (compressed):
-        # Get the size reading the ISIZE component, see
-        # http://www.gzip.org/zlib/rfc-gzip.html#header-trailer
-        # Note this assumes there's only one component in the gzip file
-        # and that the size is less than 2GB
-        import struct
-        with open(filepath, "rb") as f:
-            f.seek(-4, os.SEEK_END)
-            size = struct.unpack("<I", f.read(4))[0]
-    else:
-        size = os.path.getsize(filepath)
-
-    return size
 
 def update_translation_machinery_from_xml(translation_tables, translation_lookups):
     # XXX Pickle this to disk so it doesn't need to be parsed every time, takes 29s
@@ -142,7 +96,7 @@ def update_translation_machinery_from_xml(translation_tables, translation_lookup
     #     way of making this transparent
     if (not os.path.exists(GL_XML_FILEPATH)):
         GL_XML_FILEPATH = os.path.join("..", GL_XML_FILEPATH)
-    with xopen(GL_XML_FILEPATH, "r") as xml_file:
+    with utils.xopen(GL_XML_FILEPATH, "r") as xml_file:
         tree = xml.etree.ElementTree.parse(xml_file)
 
         # For every GLES 2 function, get the enumerants and fill the translation table
@@ -336,7 +290,7 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
     logger.info("Tracing contexts %s" % gl_contexts_to_trace)
 
     logger.info("Starting")
-    trace = xopen(trace_filepath)
+    trace = utils.xopen(trace_filepath)
 
     # Every argument can be optionally translated using a translation table
     # Each translation table contains:
@@ -567,7 +521,7 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
         if (buffer_length == ""):
             break
         buffer_length = struct.unpack('!i', buffer_length)[0]
-        logger.debug("unpacked %d ints" % buffer_length)
+        logger.debug("unpacked %d bytes" % buffer_length)
         buffer = trace.read(buffer_length)
         try:
             # The protobuff will be truncated if the app was terminated, etc
