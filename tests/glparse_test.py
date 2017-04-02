@@ -23,6 +23,7 @@ if __name__ == '__main__':
 
 import nose
 
+import errno
 import filecmp
 import glob
 import logging
@@ -75,7 +76,11 @@ def test_single_file(filename):
     compare_only = False
     if (not compare_only):
         # Re-create the new dirs, deleting existing content
-        shutil.rmtree(newOutFiledir)
+        try:
+            shutil.rmtree(newOutFiledir)
+        except OSError as e:
+            if (e.errno != errno.ENOENT):
+                raise
         common.makedirs(newOutFiledir)
 
         output_dir = newOutFiledir

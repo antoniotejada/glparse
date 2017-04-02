@@ -69,6 +69,7 @@ def update_translation_machinery_from_xml(translation_tables, translation_lookup
         # Make sure low numbers are set properly (Eg GL_CURRENT_BIT overrides GL_ONE, etc)
         translation_tables['global'][0] = "GL_ZERO"
         translation_tables['global'][1] = "GL_ONE"
+        # XXX Missing masks like GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT
         # Remove the BlendEquationModeEXT table, as it's in the global namespace
         # without the EXT
         del translation_tables['BlendEquationModeEXT']
@@ -219,12 +220,8 @@ def update_translation_machinery_from_xml(translation_tables, translation_lookup
 
     logger.info("Updated translation machinery")
 
-# Number of temporary variables that have been allocated, we need this
-# so we don't generate a variable with the same name twice
-num_allocated_vars = 0
-
-allocated_assets = set()
-def allocate_asset(assets_dir, asset_buffer_ptr, asset_filename, asset_buffer_ptr_type, asset_variable_ptr, asset_bytes, global_decls):
+def allocate_asset(allocated_assets, assets_dir, asset_buffer_ptr, asset_filename,
+                   asset_buffer_ptr_type, asset_variable_ptr, asset_bytes, global_decls):
     """!
     Register the given asset and unregister
     """
@@ -232,7 +229,7 @@ def allocate_asset(assets_dir, asset_buffer_ptr, asset_filename, asset_buffer_pt
     # XXX Hash the assets and reuse them if they have the same content?
     code = []
     if (asset_variable_ptr in allocated_assets):
-        code.extend(free_asset(asset_variable_ptr, asset_buffer_ptr))
+        code.extend(free_asset(allocated_assets, asset_variable_ptr, asset_buffer_ptr))
     else:
         # It's the first time we see this asset, generate code to create this
         # asset variable
@@ -274,7 +271,7 @@ def allocate_asset(assets_dir, asset_buffer_ptr, asset_filename, asset_buffer_pt
 
     return code
 
-def free_asset(asset_variable_ptr, asset_buffer_ptr):
+def free_asset(allocated_assets, asset_variable_ptr, asset_buffer_ptr):
     allocated_assets.remove(asset_variable_ptr)
 
     return ["closeAsset(%s)" % asset_variable_ptr,
@@ -282,7 +279,10 @@ def free_asset(asset_variable_ptr, asset_buffer_ptr):
 
 # XXX Missing other parameters like asset file vs. variable size threshold
 def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
-    global num_allocated_vars
+    # Number of temporary variables that have been allocated, we need this
+    # so we don't generate a variable with the same name twice
+    num_allocated_vars = 0
+    allocated_assets = set()
 
     logger.info("Tracing file %s" % trace_filepath)
     logger.info("Output dir %s" % output_dir)
@@ -448,7 +448,8 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
         # "glBindTexture"   : { 0 : { "field" : "intValue", "table" : "TextureTarget" }},
     }
 
-    # Create the asset directory, ignore if it already existsmay exist already,
+    # Create the asset directory, ignore if it already exists
+    # Note the invoker should point to an existing parent path, fail otherwise
     try:
         os.mkdir(assets_dir)
     except OSError as e:
@@ -460,7 +461,7 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
     #
 
     max_frame_count = sys.maxint
-    ##max_frame_count = 200
+    ##max_frame_count = 250
     # This can be disabled to save ~5s of time
     # XXX This needs fixing so it doesn't use global tables with enums that gles2
     #     doesn't have
@@ -849,7 +850,10 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
                 # Always set the length pointer to zero, as we don't need it
                 # and passing random pointers causes errors otherwise
                 if (arg_index == 3):
-                    arg.intValue[0] = 0
+                    if (len(arg.intValue) > 0):
+                        arg.intValue[0] = 0
+                    else:
+                        arg.int64Value[0] = 0
 
             elif (function_name == "glVertexAttribPointerData"):
                 # The C function only understands a few types, make sure we catch
@@ -884,7 +888,10 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
                 # the trace was generated without texture data, force all textures
                 # to empty to prevent access violations when accessing stale pointers
                 if ((not generate_empty_textures) and
-                    ((len(arg.rawBytes) == 0) and (arg.intValue[0] != 0))):
+                    ((len(arg.rawBytes) == 0) and (
+                        ((len(arg.intValue) > 0) and (arg.intValue[0] != 0)) or
+                        ((len(arg.int64Value) > 0) and (arg.int64Value[0] != 0))))
+                     ):
                     logger.warning("Trace doesn't contain texture data for %s, forcing texture to empty" %
                         function_name)
                     logger.debug(msg)
@@ -892,7 +899,10 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
                     # normal texture data but not compressed data
                     arg.type = gltrace_pb2.GLMessage.DataType.VOID
                     arg.isArray = False
-                    arg.intValue[0] = 0
+                    if (len(arg.int64Value) != 0):
+                        arg.int64Value[0] = 0
+                    else:
+                        arg.intValue[0] = 0
 
 
                 if (generate_empty_textures):
@@ -970,7 +980,8 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
                     # Allocate one asset specifically for floats, since the pointer
                     # variable declaration is keyed off the asset variable name
 
-                    preamble_strings.extend(allocate_asset(assets_dir,
+                    preamble_strings.extend(allocate_asset(allocated_assets,
+                                                           assets_dir,
                                                            arg_name,
                                                            asset_filename,
                                                            "float*",
@@ -1001,7 +1012,8 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
                     if (function_name == "glVertexAttribPointerData"):
                         arg_name = "global_const_int_ptr_%d" % msg.args[0].intValue[0]
 
-                        preamble_strings.extend(allocate_asset(assets_dir,
+                        preamble_strings.extend(allocate_asset(allocated_assets,
+                                                               assets_dir,
                                                                arg_name,
                                                                asset_filename,
                                                                "const unsigned int*",
@@ -1015,7 +1027,8 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
                         arg_name = "global_const_int_ptr_I"
                         # Allocate one asset specifically for ints, since the pointer
                         # variable declaration is keyed off the asset variable name
-                        preamble_strings.extend(allocate_asset(assets_dir,
+                        preamble_strings.extend(allocate_asset(allocated_assets,
+                                                               assets_dir,
                                                                arg_name,
                                                                asset_filename,
                                                                "const unsigned int*",
@@ -1111,7 +1124,8 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
                             asset_filename = "int_asset_%d" % num_allocated_vars
                             # Allocate one asset specifically for ints, since the pointer
                             # variable declaration is keyed off the asset variable name
-                            preamble_strings.extend(allocate_asset(assets_dir,
+                            preamble_strings.extend(allocate_asset(allocated_assets,
+                                                                   assets_dir,
                                                                    var_name,
                                                                    asset_filename,
                                                                    "const %s*" % var_type,
@@ -1149,7 +1163,8 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
                     # variable declaration is keyed off the asset variable name
                     # Note we zero-terminate the string as required by
                     # glSetShaderSource when length is NULL
-                    preamble_strings.extend(allocate_asset(assets_dir,
+                    preamble_strings.extend(allocate_asset(allocated_assets,
+                                                           assets_dir,
                                                            arg_name,
                                                            asset_filename,
                                                            "GLchar const *",
@@ -1172,6 +1187,11 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
 
                 args_strings.append(arg_name)
                 num_allocated_vars += 1
+
+            elif (len(arg.int64Value) > 0):
+                # XXX Lollipop and later change all the pointers to 64-bit, what
+                #     to do about that?
+                args_strings.append("(GLvoid*) 0x%x" % ctypes.c_uint32(arg.int64Value[0]).value)
 
             elif (len(arg.intValue) > 0):
                 # XXX Don't hard-code this only to intValues
@@ -1359,6 +1379,7 @@ if (__name__ == "__main__"):
     logger_handler = logging.StreamHandler()
     logger_handler.setFormatter(logging.Formatter(logging_format))
     logger.addHandler(logger_handler)
+    # XXX This should be passed via parameter
     logger.setLevel(logging.INFO)
 
     # Param 1 is trace name

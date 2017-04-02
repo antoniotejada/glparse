@@ -283,7 +283,7 @@ def run_command(package_name = "Replayer", run_options = ""):
     scriptine.log.mark("Clearing logcat")
     os_system("adb logcat -c")
     scriptine.log.mark("Starting application")
-    os_system("adb shell am start --ez stop_motion true %(run_options)s "
+    os_system("adb shell am start --ez stop_motion false %(run_options)s "
               "com.example.%(package_name)s/android.app.NativeActivity" % {
                 'run_options' : run_options,
                 'package_name' : package_name,

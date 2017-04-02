@@ -63,7 +63,7 @@ bool intent_get_boolean_extra(JNIEnv* env, jobject j_intent, const char* extra_n
     jmethodID gseid = (*env)->GetMethodID(env, icl, "getBooleanExtra", "(Ljava/lang/String;Z)Z");
     jstring j_extra_name = (*env)->NewStringUTF(env, extra_name);
 
-    jboolean result = (*env)->CallIntMethod(env, j_intent, gseid, j_extra_name, default_value);
+    jboolean result = (*env)->CallBooleanMethod(env, j_intent, gseid, j_extra_name, default_value);
 
     (*env)->DeleteLocalRef(env, j_extra_name);
 
