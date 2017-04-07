@@ -24,7 +24,6 @@ if __name__ == '__main__':
 import nose
 
 import errno
-import filecmp
 import glob
 import logging
 import os
@@ -37,26 +36,6 @@ logger = logging.getLogger(__name__)
 
 TEST_FILES_FILEDIR = "glparse"
 OUTPUT_FILEDIR = "_out"
-
-def dircmp(d1, d2):
-    """!
-    Non-shallow directory comparison, asserts in case of mismatch
-    """
-    logger.debug("dircmp %s vs. %s" % (d1, d2))
-    d = filecmp.dircmp(d1, d2)
-    assert(len(d.left_only) == 0)
-    assert(len(d.right_only) == 0)
-
-    # Check that every file is binary equal
-    for filename in d.common_files:
-        f1 = os.path.join(d1, filename)
-        f2 = os.path.join(d2, filename)
-        logger.debug("cmp %s vs. %s" % (f1, f2))
-        assert(filecmp.cmp(f1, f2, False))
-
-    # Check that the subdirs are binary equal
-    for dirname in d.subdirs:
-        dircmp(os.path.join(d1, dirname), os.path.join(d2, dirname))
 
 @nose.tools.nottest
 def test_single_file(filename):
@@ -85,7 +64,9 @@ def test_single_file(filename):
 
         output_dir = newOutFiledir
         assets_dir = os.path.join(newOutFiledir, "assets")
-        gl_contexts_to_trace = [0]
+        # XXX This should be taken from some kind of per-test configuration, right
+        #     now trace all the contexts
+        gl_contexts_to_trace = None
         # XXX How is this going to test future config parameters, where get them from?
         #     filename? config file?
         lines = glparse.glparse(filepath, output_dir, assets_dir, gl_contexts_to_trace)
@@ -95,7 +76,7 @@ def test_single_file(filename):
                 f.writelines([line, "\n"])
 
     # Do non-shallow directory comparison
-    dircmp(oldOutFiledir, newOutFiledir)
+    common.dircmp(oldOutFiledir, newOutFiledir)
 
 filepaths = glob.glob(os.path.join(TEST_FILES_FILEDIR, "*.gz"))
 filepaths += glob.glob(os.path.join(TEST_FILES_FILEDIR, "*.gltrace"))

@@ -69,16 +69,19 @@ GLint common_get_shader_program(const char *vertex_shader_source, const char *fr
     return shader_program;
 }
 
-void draw(AAssetManager* param_AAssetManager_ptr_0, int draw_limit, int frame_limit)
+void draw(DrawState* param_DrawState_ptr_0)
 {
     GLuint shader_program, vbo;
     GLint pos;
 
-    if (frame_limit > 0)
+    if (param_DrawState_ptr_0->frame_limit > 0)
     {
-        LOGI("Reached frame %d end of replay, exiting", frame_limit);
+        LOGI("Reached frame %d end of replay, exiting", param_DrawState_ptr_0->frame_limit);
         exit(EXIT_SUCCESS);
     }
+
+    EGLContext context = eglOverriddenCreateContext(param_DrawState_ptr_0);
+    eglOverriddenMakeCurrent(param_DrawState_ptr_0, context);
 
     LOGI("GL_VERSION  : %s\n", glGetString(GL_VERSION) );
     LOGI("GL_RENDERER : %s\n", glGetString(GL_RENDERER) );

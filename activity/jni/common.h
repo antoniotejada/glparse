@@ -17,7 +17,33 @@
 #ifndef COMMON_H
 #define COMMON_H
 
+#include <EGL/egl.h>
 #include <android/log.h>
+#include <android_native_app_glue.h>
+#include <stdbool.h>
+
+
+typedef struct {
+    // Frequently used fields
+    AAssetManager* pAssetManager;
+    int draw_limit;
+    int frame_limit;
+
+    // Infrequently used fields
+    EGLDisplay display;
+    EGLSurface surface;
+    EGLConfig config;
+    EGLContext* contexts;
+    int num_contexts;
+
+    // OpenGL state overrides
+
+    // Dither override (enable takes precedence over disable)
+    // XXX Add other gl state overrides like max_viewport/scissor_width/height
+    // (in case the trace didn't contain those calls)
+    bool gl_enable_dither;
+    bool gl_disable_dither;
+} DrawState;
 
 #define LOGV(...) ((void)__android_log_print(ANDROID_LOG_VERBOSE, "native-activity", __VA_ARGS__))
 #define LOGD(...) ((void)__android_log_print(ANDROID_LOG_DEBUG, "native-activity", __VA_ARGS__))

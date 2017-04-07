@@ -25,7 +25,6 @@
   * @see http://android-developers.blogspot.ie/2011/11/jni-local-reference-changes-in-ics.html
   */
 #include <android/sensor.h>
-#include <android_native_app_glue.h>
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
 #include <errno.h>
@@ -56,21 +55,23 @@ struct saved_state {
 /**
  * Shared state for our app.
  */
-struct engine {
+ struct engine {
     struct android_app* app;
+    DrawState drawState;
 
     ASensorManager* sensorManager;
     const ASensor* accelerometerSensor;
     ASensorEventQueue* sensorEventQueue;
 
     bool animating;
-    EGLDisplay display;
-    EGLSurface surface;
-    EGLContext context;
     int32_t width;
     int32_t height;
     struct saved_state state;
 };
+
+// GL configuration default parameters
+bool gl_disable_dither = false;
+bool gl_enable_dither = false;
 
 // EGL configuration default parameters, overrides will be loaded at startup
 // -1 means EGL_DONT_CARE
@@ -97,14 +98,6 @@ int frame_limit = 0;
 bool stop_motion = true;
 int capture_frequency = 0;
 bool capture_compressed = true;
-
-// OpenGL state overrides
-
-// Dither override (enable takes precedence over disable)
-// XXX Add other gl state overrides like max_viewport/scissor_width/height
-// (in case the trace didn't contain those calls)
-bool gl_enable_dither  = false;
-bool gl_disable_dither = false;
 
 GLbyte* g_captured_pixels = NULL;
 typedef struct timespec timespec_t;
@@ -208,7 +201,7 @@ EGLAttributeInfo egl_context_attribute_infos[] = {
     MAKE_EGL_ATTRIBUTE_INFO( EGL_RENDER_BUFFER),
 };
 
-static int engine_log_egl_strings(EGLDisplay display, int logLevel)
+static int engine_log_egl_strings(const EGLDisplay display, int logLevel)
 {
     int j;
     for (j = 0; j < ARRAY_LENGTH(egl_string_attribute_infos); ++j)
@@ -223,7 +216,7 @@ static int engine_log_egl_strings(EGLDisplay display, int logLevel)
     }
 }
 
-static int engine_log_egl_config(EGLDisplay display, EGLConfig config, int logLevel)
+static int engine_log_egl_config(const EGLDisplay display, EGLConfig config, int logLevel)
 {
     int j;
     for (j = 0; j < ARRAY_LENGTH(egl_config_attribute_infos); ++j)
@@ -277,7 +270,7 @@ static int engine_log_egl_config(EGLDisplay display, EGLConfig config, int logLe
     }
 }
 
-static int engine_log_egl_surface(EGLDisplay display, EGLSurface surface, int logLevel)
+static int engine_log_egl_surface(const EGLDisplay display, const EGLSurface surface, int logLevel)
 {
     int j;
     for (j = 0; j < ARRAY_LENGTH(egl_surface_attribute_infos); ++j)
@@ -332,7 +325,7 @@ static int engine_log_egl_surface(EGLDisplay display, EGLSurface surface, int lo
     }
 }
 
-static int engine_log_egl_context(EGLDisplay display, EGLContext context, int logLevel)
+int engine_log_egl_context(const EGLDisplay display, const EGLContext context, int logLevel)
 {
     int j;
     for (j = 0; j < ARRAY_LENGTH(egl_context_attribute_infos); ++j)
@@ -473,7 +466,6 @@ static int engine_init_display(struct engine* engine)
     EGLint numConfigs;
     EGLConfig config;
     EGLSurface surface;
-    EGLContext context;
 
     EGLDisplay display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
 
@@ -527,7 +519,6 @@ static int engine_init_display(struct engine* engine)
             goto done;
         }
         config = configs[0];
-        free(configs);
     }
 
     LOGI("Using config %p of %d configs", config, numConfigs);
@@ -578,22 +569,6 @@ static int engine_init_display(struct engine* engine)
     LOGI("EGL Surface %p information", surface);
     engine_log_egl_surface(display, surface, ANDROID_LOG_INFO);
 
-    EGLint context_attrib_list[] = {
-        EGL_CONTEXT_CLIENT_VERSION, 2,
-        EGL_NONE
-    };
-    context = eglCreateContext(display, config, EGL_NO_CONTEXT, context_attrib_list);
-
-    if (context == EGL_NO_CONTEXT)
-    {
-        LOGE("Unable to create the context, error 0x%x", eglGetError());
-        goto done;
-    }
-    
-    // Dump EGL context information
-    LOGI("EGL context %p information", context);
-    engine_log_egl_context(display, context, ANDROID_LOG_INFO);
-
     // Get the width & height in case the requested values were zero 
     // Do this only if they are zero, as Imagination is known to return always 
     // the display size instead of the surface size
@@ -631,40 +606,20 @@ static int engine_init_display(struct engine* engine)
         g_captured_pixels = malloc(egl_width * egl_height * ((egl_alpha_size == 8) ? 4 : ((egl_red_size == 8) ? 3 : 2)));
     }
 
-    if (eglMakeCurrent(display, surface, surface, context) == EGL_FALSE) 
-    {
-        LOGE("Unable to eglMakeCurrent");
-        goto done;
-    }
-    LOGI("Context made current");
-
-    // Dump GL information
-    LOGI("GL information");
-    LOGI("\tRenderer: %s", glGetString(GL_RENDERER));
-    LOGI("\tVendor: %s", glGetString(GL_VENDOR));
-    LOGI("\tVersion: %s", glGetString(GL_VERSION));
-    LOGI("\tShading Language: %s", glGetString(GL_SHADING_LANGUAGE_VERSION));
-    LOGI("\tExtensions: %s", glGetString(GL_EXTENSIONS));
-
-    engine->display = display;
-    engine->context = context;
-    engine->surface = surface;
     engine->width = egl_width;
     engine->height = egl_height;
     engine->state.angle = 0;
 
-    // Initialize GL state.
-    if (gl_enable_dither)
-    {
-        glEnable(GL_DITHER);
-    }
-    else if (gl_disable_dither)
-    {
-        glDisable(GL_DITHER);
-    }
+    engine->drawState.display = display;
+    engine->drawState.config = config;
+    engine->drawState.surface = surface;
+    engine->drawState.num_contexts = 0;
+    engine->drawState.contexts = NULL;
+    // XXX What's the lifecycle of this, does it need to be recopied?
+    engine->drawState.pAssetManager = engine->app->activity->assetManager;
 
-    // glEnable(GL_CULL_FACE);
-    // glDisable(GL_DEPTH_TEST);
+    engine->drawState.gl_enable_dither = gl_enable_dither;
+    engine->drawState.gl_disable_dither = gl_disable_dither;
 
     ret = 0;
 
@@ -691,7 +646,7 @@ timespec_t timespec_delta(timespec_t start, timespec_t end)
     return temp;
 }
 
-void draw(AAssetManager* pAssetManager, int draw_limit, int frame_limit);
+void draw(DrawState* pDrawState);
 
 /**
  * Capture the current frame
@@ -768,7 +723,7 @@ done:
  * Just the current frame in the display.
  */
 static void engine_draw_frame(struct engine* engine) {
-    if (engine->display == NULL) 
+    if (engine->drawState.display == EGL_NO_DISPLAY)
     {
         // No display.
         LOGW("No display!");
@@ -786,7 +741,12 @@ static void engine_draw_frame(struct engine* engine) {
         
         clock_gettime(CLOCK_MONOTONIC, &g_frame_start_time);
 
-        draw(engine->app->activity->assetManager, 0x7FFFFFFF, input_adjusted_frame_limit);
+        engine->drawState.draw_limit = INT_MAX;
+        engine->drawState.frame_limit = input_adjusted_frame_limit;
+
+        draw(&engine->drawState);
+        // XXX Disable this getError by command line option or it will pile up
+        //     in replay/capture cycles
         LOGI("Frame %d GL error is 0x%x", input_adjusted_frame_limit, glGetError());
 
         timespec_t frame_end_time;
@@ -804,7 +764,7 @@ static void engine_draw_frame(struct engine* engine) {
         }
 
         // Swap this frame
-        eglSwapBuffers(engine->display, engine->surface);
+        eglSwapBuffers(engine->drawState.display, engine->drawState.surface);
 
         timespec_t swap_end_time;
         clock_gettime(CLOCK_MONOTONIC, &swap_end_time);
@@ -822,23 +782,20 @@ static void engine_draw_frame(struct engine* engine) {
  * Tear down the EGL context currently associated with the display.
  */
 static void engine_term_display(struct engine* engine) {
-    if (engine->display != EGL_NO_DISPLAY) 
+    if (engine->drawState.display != EGL_NO_DISPLAY)
     {
-        eglMakeCurrent(engine->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
-        if (engine->context != EGL_NO_CONTEXT) 
+        eglMakeCurrent(engine->drawState.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+        // XXX Missing destroying all the created contexts, but it's not clear
+        //     how to recreate them afterwards?
+        if (engine->drawState.surface != EGL_NO_SURFACE)
         {
-            eglDestroyContext(engine->display, engine->context);
+            eglDestroySurface(engine->drawState.display, engine->drawState.surface);
         }
-        if (engine->surface != EGL_NO_SURFACE) 
-        {
-            eglDestroySurface(engine->display, engine->surface);
-        }
-        eglTerminate(engine->display);
+        eglTerminate(engine->drawState.display);
     }
     engine->animating = false;
-    engine->display = EGL_NO_DISPLAY;
-    engine->context = EGL_NO_CONTEXT;
-    engine->surface = EGL_NO_SURFACE;
+    engine->drawState.display = EGL_NO_DISPLAY;
+    engine->drawState.surface = EGL_NO_SURFACE;
 }
 
 /**

@@ -26,6 +26,9 @@ import scriptine
 import subprocess
 import string
 
+import glparse
+import deinline as deinliner
+
 #
 # scriptine.shell is missing from the manifest in 0.2.0, provide our own shell
 # functions (this is probably fixed on 0.2.0a2, but not available on pip)
@@ -61,30 +64,29 @@ def check_call(cmds):
     # Quote the command if it contains spaces
     os_system(subprocess.list2cmdline(cmds))
 
-def trace_command(package_name = "Replayer",
-                  trace_filepath = "_out/com.amazon.tv.launcher.gltrace.gz",
-                  trace_contexts = "0",
-                  deinline = False):
+def trace_command(trace_filepath = "_out/com.amazon.tv.launcher.gltrace.gz",
+                  trace_contexts = None,
+                  deinline = False,
+                  output_dir = "_out/Replayer"):
     """
     Generate C include files and assets from an OpenGL ES trace.
 
-    :param package_name: Name of the package, full name will be
-                         com.example.<package_name>
     :param trace_filepath: Path to the OpenGL ES trace file
-    :param trace_contexts: Index to the 0-based OpenGL ES context to trace
+    :param trace_contexts: String with comma-separated numbers of the 0-based
+                           OpenGL ES contexts to trace
     :param deinline: Perform trace deinlining
+    :param output_dir: Output directory for the generated include files and logs
     """
     # Generate the necessary dirs and filepaths
-    output_dir = scriptine.path("_out").joinpath(package_name)
+    output_dir = scriptine.path(output_dir)
     assets_dir = output_dir.joinpath("assets")
-    trace_logpath = output_dir.joinpath("trace.log")
     trace_incpath = output_dir.joinpath("trace.inc")
     deinlined_incpath = output_dir.joinpath("trace2.inc")
-    deinlined_logpath = output_dir.joinpath("trace2.log")
 
     # Create the output and assets directories
-    scriptine.log.mark("Creating output and asset directories")
+    scriptine.log.mark("Creating output directory %s" % output_dir)
     output_dir.ensure_dir()
+    scriptine.log.mark("Creating assets directory %s" % assets_dir)
     assets_dir.ensure_dir()
 
     # Delete the old assets
@@ -93,43 +95,55 @@ def trace_command(package_name = "Replayer",
 
     # Generate the trace.inc file
     scriptine.log.mark("Generating the trace.inc file")
-    cmd = str("python -O glparse.py %(trace_filepath)s %(output_dir)s %(trace_contexts)s "
-              "> %(trace_incpath)s 2> %(trace_logpath)s" % {
-                'trace_filepath' : trace_filepath,
-                'output_dir' : output_dir,
-                'trace_contexts' : trace_contexts,
-                'trace_incpath' : trace_incpath,
-                'trace_logpath' : trace_logpath,
-            })
+    if (not scriptine.misc.options.dry):
 
-    os_system(cmd)
+        if (scriptine.log._level <= scriptine.log.L_DEBUG):
+            logger = logging.getLogger("glparse")
+            logging_format = "%(asctime).23s %(levelname)s:%(filename)s(%(lineno)d) [%(thread)d]: %(message)s"
+            logger_handler = logging.StreamHandler()
+            logger_handler.setFormatter(logging.Formatter(logging_format))
+            logger.addHandler(logger_handler)
+            logger.setLevel(logging.DEBUG)
+
+        gl_contexts_to_trace = trace_contexts
+        if (gl_contexts_to_trace is not None):
+            gl_contexts_to_trace = [int(item) for item in gl_contexts_to_trace.split(",")]
+        lines = glparse.glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace)
+
+        with open(trace_incpath, "w") as f:
+            for line in lines:
+                f.writelines([line, "\n"])
 
     # Generate the deinlined file
     if (deinline):
         scriptine.log.info("Deinlining the trace.inc file")
-        cmd = str("python -O deinline.py %(trace_incpath)s > %(deinlined_incpath)s 2> "
-                  "%(deinlined_logpath)s" % {
-                'trace_incpath' : trace_incpath,
-                'deinlined_incpath' : deinlined_incpath,
-                'deinlined_logpath' : deinlined_logpath,
-                })
-        os_system(cmd)
-    else:
-        scriptine.path.copyfile(trace_incpath, deinlined_incpath)
+        if (not scriptine.misc.options.dry):
 
-def ndk_command(package_name = "Replayer", ndk_home = None, debug = False):
+            lines = deinliner.deinline(trace_incpath)
+
+            with open(deinlined_incpath, "w") as f:
+                for line in lines:
+                    f.writelines([line, "\n"])
+    else:
+        if (not scriptine.misc.options.dry):
+            scriptine.path.copyfile(trace_incpath, deinlined_incpath)
+
+def ndk_command(ndk_home = None, debug = False, activity_dir = "activity", output_dir = "_out/Replayer"):
     """
     Build the NDK project and generate native object files (requires the 'trace'
     target to have been built beforehand).
 
-    :param package_name: Name of the package, com.example.<package_name>
     :param ndk_home: Path to the Android NDK home directory if not in NDK_HOME or
                      NDK_HOME/bin is not in the path.
+    :param debug: Debug/Release build (this doesn't affect the debuggable flag,
+                  apps are always debuggable)
+    :param activity_dir: Directory where the activity skeleton is
+    :param output_dir: Output directory for the ndk build
     """
-    output_dir = scriptine.path("_out").joinpath(package_name)
+    output_dir = scriptine.path(output_dir)
     obj_dir = output_dir.joinpath("obj")
     libs_dir = output_dir.joinpath("libs")
-    activity_dir = scriptine.path("activity")
+    activity_dir = scriptine.path(activity_dir)
     activity_jni_dir = activity_dir.joinpath("jni")
     android_mk_path = activity_jni_dir.joinpath("Android.mk")
 
@@ -161,9 +175,11 @@ def ndk_command(package_name = "Replayer", ndk_home = None, debug = False):
             "TARGET_PLATFORM=android-12",
             "NDK_LIBS_OUT=%s" % libs_dir,
             "NDK_OUT=%s" % obj_dir]
+
     check_call(cmds)
 
-def ant_command(package_name = "Replayer", android_home = None, ant_home = None):
+def ant_command(package_name = "Replayer", android_home = None, ant_home = None,
+                activity_dir="activity", output_dir="_out/Replayer"):
     """
     Build the ANT project and generate Android APK (requires the NDK and trace
     targets to have been built beforehand).
@@ -179,8 +195,10 @@ def ant_command(package_name = "Replayer", android_home = None, ant_home = None)
                          is not in the path
     :param ant_home: Path to the Ant build system directory if not in the path or
                      in the ANT_HOME environment variable
+    :param activity_dir: Directory where the activity skeleton is
+    :param output_dir: Output directory for the ndk build
     """
-    output_dir = scriptine.path("_out").joinpath(package_name)
+    output_dir = scriptine.path(output_dir)
     bin_dir = output_dir.joinpath("bin")
 
     # Delete any existing files
@@ -208,7 +226,7 @@ def ant_command(package_name = "Replayer", android_home = None, ant_home = None)
     # See http://developer.android.com/tools/projects/projects-cmdline.html
 
     output_activity_dir = output_dir.joinpath("activity")
-    input_activity_dir =  scriptine.path("activity")
+    input_activity_dir =  scriptine.path(activity_dir)
 
     scriptine.log.mark("Deleting output activity directory")
     output_activity_dir.rmtree(True)
@@ -250,14 +268,15 @@ def ant_command(package_name = "Replayer", android_home = None, ant_home = None)
             "debug" ]
     check_call(cmds)
 
-def install_command(package_name = "Replayer"):
+def install_command(package_name = "Replayer", output_dir = "_out/Replayer"):
     """
     Install the package on the device (requires the 'ant' target to have been built
     beforehand).
 
     :param package_name: Name of the package
+    :param output_dir: Parent directory of the bin directory containing the apk
     """
-    output_dir = scriptine.path("_out").joinpath(package_name)
+    output_dir = scriptine.path(output_dir)
 
     # Uninstall completely to prevent certificate failures when over-installing
     # builds from a different machine
@@ -276,7 +295,6 @@ def run_command(package_name = "Replayer", run_options = ""):
     :param package_name: Name of the package
     :param run_options: Options to pass to "am start", in quotation marks
     """
-    output_dir = scriptine.path("_out").joinpath(package_name)
 
     scriptine.log.mark("Stopping application")
     os_system("adb shell am force-stop com.example.%s" % package_name)
@@ -294,13 +312,15 @@ def run_command(package_name = "Replayer", run_options = ""):
 def all_command(targets="trace,ndk,ant,install,run",
                 package_name = "Replayer",
                 trace_filepath = "_out/test.gltrace.gz",
-                trace_contexts = "0",
+                trace_contexts = None,
                 deinline = False,
                 ndk_debug = False,
                 ndk_home = None,
                 android_home = None,
                 ant_home= None,
+                activity_dir = "activity",
                 run_options="",
+                output_dir="_out/Replayer",
                 ):
     """
     Build all or selected targets.
@@ -313,23 +333,27 @@ def all_command(targets="trace,ndk,ant,install,run",
     :param deinline: Perform trace deinlining
     :param ndk_home: Path to the Android NDK home directory if not in NDK_HOME or
                      NDK_HOME/bin is not in the path.
-    :param ndk_debug: Build NDK for debug
+    :param ndk_debug: Build NDK for debug or release (this doesn't affect debuggable
+                      flag, apps are always debuggable)
     :param android_home: Path to the Android SDK root directory if not in the
                          ANDROID_HOME environment variable or ANDROID_HOME/bin
                          is not in the path
     :param ant_home: Path to the Ant build system directory if not in the path or
                      in the ANT_HOME environment variable
+    :param activity_dir: Directory where the activity skeleton is
     :param run_options: Comma-separated list of options to pass to "am start"
+    :param output_dir: Root directory where to generate the trace/ndk build/ant build
+
     """
     target_list = targets.split(",")
     if ("trace" in target_list):
-        trace_command(package_name, trace_filepath, trace_contexts, deinline)
+        trace_command(trace_filepath, trace_contexts, deinline, output_dir)
     if ("ndk" in target_list):
-        ndk_command(package_name, ndk_home, ndk_debug)
+        ndk_command(ndk_home, ndk_debug, activity_dir, output_dir)
     if ("ant" in target_list):
-        ant_command(package_name, android_home, ant_home)
+        ant_command(package_name, android_home, ant_home, activity_dir, output_dir)
     if ("install" in target_list):
-        install_command(package_name)
+        install_command(package_name, output_dir)
     if ("run" in target_list):
         run_command(package_name, run_options)
 

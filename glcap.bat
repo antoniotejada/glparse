@@ -9,9 +9,13 @@ REM SET PACKAGE=com.kipoapp.reader.profile
 REM SET ACTIVITY=com.kipoapp.reader.Reader
 REM SET TRACE_FILEPATH=kipoprofile.gltrace.gz
 
-SET PACKAGE=com.example.kipoprofile
-SET ACTIVITY=android.app.NativeActivity
-SET TRACE_FILEPATH=kipoprofile250.gltrace.gz
+REM SET PACKAGE=com.example.kipoprofile
+REM SET ACTIVITY=android.app.NativeActivity
+REM SET TRACE_FILEPATH=kipoprofile250.gltrace.gz
+
+SET PACKAGE=com.google.fpl.zooshi
+SET ACTIVITY=.ZooshiActivity
+SET TRACE_FILEPATH=zooshi.gltrace.gz
 
 SET PARAMS="--ez stop_motion false"
 

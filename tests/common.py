@@ -17,6 +17,7 @@
 import nose
 
 import errno
+import filecmp
 import logging
 import os
 import sys
@@ -49,30 +50,25 @@ def makedirs(dirname):
         if e.errno != errno.EEXIST:
             raise
 
-def count_lines_between_braces(lines):
+def dircmp(d1, d2):
     """!
-    Count the number of lines between braces
+    Non-shallow directory comparison, asserts in case of mismatch
     """
+    logger.debug("dircmp %s vs. %s" % (d1, d2))
+    d = filecmp.dircmp(d1, d2)
+    assert(len(d.left_only) == 0)
+    assert(len(d.right_only) == 0)
 
-    braceNestingLevel = 0
-    lineCount = 0
+    # Check that every file is binary equal
+    for filename in d.common_files:
+        f1 = os.path.join(d1, filename)
+        f2 = os.path.join(d2, filename)
+        logger.debug("cmp %s vs. %s" % (f1, f2))
+        assert(filecmp.cmp(f1, f2, False))
 
-    for line in lines:
-        strippedLine = line.strip()
-        if (strippedLine == ""):
-            pass
-        elif (strippedLine == "{"):
-            braceNestingLevel += 1
-        elif (strippedLine == "}"):
-            braceNestingLevel -= 1
-        elif (braceNestingLevel > 0):
-            lineCount += 1
-
-        assert(braceNestingLevel >= 0)
-
-    assert(braceNestingLevel == 0)
-
-    return lineCount
+    # Check that the subdirs are binary equal
+    for dirname in d.subdirs:
+        dircmp(os.path.join(d1, dirname), os.path.join(d2, dirname))
 
 def declare_per_file_functions(filepaths, modulename, test_single_file):
     """!

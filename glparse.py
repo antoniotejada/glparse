@@ -266,7 +266,7 @@ def allocate_asset(allocated_assets, assets_dir, asset_buffer_ptr, asset_filenam
     #     This could be solved by taking aliasing into account when removing
     #     redundant parameters.
     code.append('openAndGetAssetBuffer(%s, "%s", &%s, (const void**) &%s)' %
-                ("param_AAssetManager_ptr_0", asset_filename, asset_variable_ptr,
+                ("param_DrawState_ptr_0", asset_filename, asset_variable_ptr,
                  asset_buffer_ptr))
 
     return code
@@ -279,6 +279,10 @@ def free_asset(allocated_assets, asset_variable_ptr, asset_buffer_ptr):
 
 # XXX Missing other parameters like asset file vs. variable size threshold
 def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
+    """!
+    @param gl_contexts_to_trace: *list* of *integers* with the contexts to trace
+            or None to trace all.
+    """
     # Number of temporary variables that have been allocated, we need this
     # so we don't generate a variable with the same name twice
     num_allocated_vars = 0
@@ -326,10 +330,10 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
     # argument's index that should be inserted, or -1 if the return value should
     # be inserted
     translation_insertions = {
-        #  XXX This doesn't work atm, the trace doesn't contain the return value
-        #      for eglCreateContext.
-        #      This probably needs to be handled in a special way?
-        ## "eglCreateContext"  : { -1 :{ "field" : "intValue", "table" : "contexts"     }},
+        #  WAR The trace contains the context id in the second parameter instead
+        #      of the return value, treat this as if the value was being returned
+        #      and special case it later
+        "eglCreateContext"  : { -1 : { "field" : "intValue", "table" : "contexts"  }},
 
         "glCreateShader"    : { -1 : { "field" : "intValue", "table" : "shaders"  }},
         "glCreateProgram"   : { -1 : { "field" : "intValue", "table" : "programs" }},
@@ -415,6 +419,9 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
         "glIsShader"        : { 0 : { "field" : "intValue", "table" : "shaders"      }},
         "glIsTexture"       : { 0 : { "field" : "intValue", "table" : "textures"     }},
 
+        # Note the trace introduces calls to get the active attributes and active
+        # uniforms in order to help the debugger, see
+        # https://android.googlesource.com/platform/frameworks/native/+/3365c56716432d3bfdf41bb82fb08df821f41d0c/opengl/libs/GLES_trace/src/gltrace_fixup.cpp#305
         "glLinkProgram"     : { 0 : { "field" : "intValue", "table" : "programs"     }},
 
         # XXX needs per-element lookup support
@@ -503,19 +510,19 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
     # Currently bound framebuffer
     current_framebuffer = 0
     # Current and max viewport state
-    current_viewport_x = 0;
-    current_viewport_y = 0;
-    current_viewport_width = 0;
-    current_viewport_height = 0;
-    max_viewport_width = 0;
-    max_viewport_height = 0;
+    current_viewport_x = 0
+    current_viewport_y = 0
+    current_viewport_width = 0
+    current_viewport_height = 0
+    max_viewport_width = 0
+    max_viewport_height = 0
     # Current and max scissor state
-    current_scissor_x = 0;
-    current_scissor_y = 0;
-    current_scissor_width = 0;
-    current_scissor_height = 0;
-    max_scissor_width = 0;
-    max_scissor_height = 0;
+    current_scissor_x = 0
+    current_scissor_y = 0
+    current_scissor_width = 0
+    current_scissor_height = 0
+    max_scissor_width = 0
+    max_scissor_height = 0
 
     while True:
         buffer_length = trace.read(4)
@@ -532,85 +539,33 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
             logger.warning("Decode error, truncated protobuff, trace will be incomplete")
             break
 
+        assert None is logger.debug("Found message %s" % msg)
+
         function_name = function_enum_type.values_by_number[msg.function].name
         function_string = function_name
 
         logger.debug("Found function %s" % function_name)
 
-        if (msg.context_id not in gl_contexts_to_trace):
+        if ((gl_contexts_to_trace is not None) and (msg.context_id not in gl_contexts_to_trace)):
             logger.warning("Ignoring function %s for ignored context %d" %
                 (function_name, msg.context_id))
             continue
 
+        args_strings = []
+        preamble_strings = []
+        epilogue_strings = []
+
         # Append to the frames and check if this is the final frame
         if (function_name == "eglSwapBuffers"):
-            code = []
             frame_count += 1
             logger.info("Parsing frame %d" % frame_count)
             if (frame_count >= max_frame_count):
                 break
-            # Note a reference is appended, so processing an eglSwapBuffers is
-            # not necessary to complete this frame
+            # Create a new code[] list and append a reference to it in the
+            # code_frames list. Future modifications of code[] will be reflected
+            # in code_frames[] automatically
+            code = []
             code_frames.append(code)
-
-        if (function_name == "eglMakeCurrent"):
-            # XXX Disable for now
-            continue
-
-            # XXX This needs to evict the program-specific tables like uniforms_NNN
-            tables_to_evict = [ 'attribs', 'uniforms', 'current_uniforms', 'textures', 'shaders', 'programs', 'buffers', 'framebuffers' ]
-            current_field_name = 'context'
-            id_prefix_current_field_names = []
-            next_current_value = msg.args[0].intValue[0]
-
-            # Switch the attribs and uniforms tables away by renaming the tables
-            # Only do this if the new state is different from the old
-            if (current_state[current_field_name] != next_current_value):
-                if (current_state[current_field_name] is not None):
-
-                    # Calculate a prefix to the evict id, this is necessary
-                    # eg. so evicted tables from different contexts are not
-                    # overwritten
-                    # XXX Right now this doesn't work if contexts share lists
-                    #     Probably the solution to that is to make different contexts
-                    #     share the translation tables (either by having them
-                    #     point to the same dict or by having the id be shared
-                    #     across contexts of the same group)
-
-                    evict_id_prefixes = [str(current_state[id_prefix_current_field_name])
-                                        for id_prefix_current_field_name in id_prefix_current_field_names]
-
-                    for table_name in tables_to_evict:
-
-                        evict_id = string.join(evict_id_prefixes + [str(current_state[current_field_name])], "_")
-                        evicted_table_name = "%s_%s" % (table_name, evict_id)
-                        evicted_table = translation_tables.get(table_name, {})
-
-                        logger.debug("Evicting table %s into %s" % (table_name, evicted_table_name))
-                        logger.debug("  %s" % evicted_table)
-                        translation_tables[evicted_table_name] = evicted_table
-
-                        # XXX Check for setting the NULL object?
-                        evict_id = string.join(evict_id_prefixes + [str(next_current_value)], "_")
-                        evicted_table_name = "%s_%s" % (table_name, evict_id)
-                        evicted_table = translation_tables.get(evicted_table_name, {})
-
-                        logger.debug("Restoring table %s into %s" % (evicted_table_name, table_name))
-                        logger.debug("  %s" % evicted_table)
-                        translation_tables[table_name] = evicted_table
-
-                logger.debug("Setting new current state %s from %s to %s" %
-                             (current_field_name,
-                              current_state[current_field_name],
-                          next_current_value))
-                logger.debug(current_state[current_field_name])
-                current_state[current_field_name] = next_current_value
-
-        # Ignore makecurrent and createcontext
-        # XXX Implement makecurrent and createcontext
-        if ((function_name == "eglCreateContext") or
-            (function_name == "eglMakeCurrent") or
-            (function_name == "eglSwapBuffers")):
             continue
 
         if ((function_name in ["glVertexAttrib1fv",
@@ -635,6 +590,28 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
             logger.debug(msg)
             continue
 
+        if (function_name == "eglMakeCurrent"):
+            # First and only parameter is context index
+            logger.info("eglMakeCurrent %s" % msg)
+
+            function_string = "eglOverriddenMakeCurrent"
+            args_strings.append("param_DrawState_ptr_0")
+
+            # If we were to support non-shared contexts, this should swap the
+            # translation tables so non-sharing contexts don't have common
+            # translations. Note that the trace doesn't have information on which
+            # contexts are sharing and which are not, so all contexts share.
+
+        if (function_name == "eglCreateContext"):
+            # First parameter is EGL version, second is returned context index
+            # WAR There's no information about:
+            #     - the surface
+            #     - the config
+            #     - whether to share or not
+            # Create a shared context using the default configuration
+            logger.info("eglCreateContext %s" % msg)
+            function_string = "eglOverriddenCreateContext"
+
         # Do translation machinery context in/out
         # This could be parameterized in tables, but only two functions cause
         # switches so it's not worth it
@@ -652,10 +629,6 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
             translation_tables['current_uniforms'] = current_uniforms
 
             logger.debug("Switched current uniforms to %s" % table_name)
-
-        args_strings = []
-        preamble_strings = []
-        epilogue_strings = []
 
         translation_insertion = translation_insertions.get(function_name, {})
         translation_lookup = translation_lookups.get(function_name, {})
@@ -766,11 +739,13 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
                 # Allow overriding dithering
                 if (arg.intValue[0] == 0x0BD0):
                     function_string = "glOverriddenDisable"
+                    args_strings.append("param_DrawState_ptr_0")
 
             elif (function_name == "glEnable"):
                 # Allow overriding dithering
                 if (arg.intValue[0] == 0x0BD0):
                     function_string = "glOverriddenEnable"
+                    args_strings.append("param_DrawState_ptr_0")
 
             elif ((function_name == "glGetVertexAttribiv") and (arg_index == 2)):
                 # XXX The trace sends intValue with isArray false
@@ -802,25 +777,44 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
                     is_aliased_point_size_range = False
                     arg.floatValue.append(0.0)
 
-            elif (function_name == "glGetShaderInfoLog"):
-                # the two last glGetShaderInfoLog arguments in the trace are ints
-                # instead array of int and array of char, convert to those
+            elif ((function_name == "glGetShaderInfoLog") or
+                  (function_name == "glGetProgramInfoLog")):
+                # WAR: the two last glGetShader/ProgramInfoLog arguments in the
+                #      trace are ints instead array of int and array of char,
+                #      convert to those
                 if (arg_index == 1):
                     # Store the max length for later
                     get_shader_info_log_max_length = arg.intValue[0]
                     logger.debug("Found shader_info_log_max_length %d" % get_shader_info_log_max_length)
                 if (arg_index == 2):
                     # Convert to pointer to int
+                    logger.debug("WAR: glGetShaderPrecisionFormat arg %d" % arg_index)
                     arg.isArray = True
                 elif (arg_index == 3):
                     # Convert to pointer to char
+                    logger.debug("WAR: glGetShaderPrecisionFormat arg %d" % arg_index)
                     arg.isArray = True
                     arg.charValue.append("?" * get_shader_info_log_max_length)
 
-            elif (function_name == "glGetVertexAttribPointerv"):
-                # the last parameter in the trace is an INT instead of a pointer
-                # to pointer, convert to pointer to int
+            elif ((function_name == "glGetShaderPrecisionFormat")):
+                # WAR: The last two parameters should be pointers but the trace
+                #      makes them ints
+                if ((arg_index == 2) or (arg_index == 3)):
+                    logger.debug("WAR: glGetShaderPrecisionFormat arg %d" % arg_index)
+                    arg.isArray = True
+
+            elif ((function_name == "glInvalidateFramebuffer")):
+                # WAR: The last two parameters should be pointers but the trace
+                #      makes them ints
                 if (arg_index == 2):
+                    logger.debug("WAR: glInvalidateFramebuffer arg %d" % arg_index)
+                    arg.isArray = True
+
+            elif (function_name == "glGetVertexAttribPointerv"):
+                # WAR: the last parameter in the trace is an INT instead of a pointer
+                #      to pointer, convert to pointer to int
+                if (arg_index == 2):
+                    logger.debug("WAR: glGetVertexAttribPointerv arg %d" % arg_index)
                     arg.isArray = True
                     arg.type = gltrace_pb2.GLMessage.DataType.VOID
 
@@ -1061,7 +1055,7 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
             # Note booleans have both len(intValue) and len(boolValue) greater
             # than zero
             elif ((arg.isArray) and ((len(arg.intValue) > 0) or (len(arg.boolValue) > 0) or
-                    len(arg.charValue) > 0)):
+                (len(arg.charValue) > 0) or (len(arg.int64Value) > 0))):
 
                 # XXX Missing initializers for all but charvalue?
                 if (len(arg.boolValue) > 0):
@@ -1074,7 +1068,7 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
                     else:
                         initializer = '"%s"' % arg.charValue[0]
                     preamble_strings.append("GLchar %s[] = %s" % (var_name, initializer))
-                elif (len(arg.intValue) > 0):
+                elif ((len(arg.intValue) > 0) or (len(arg.int64Value) > 0)):
                     if (arg.type == gltrace_pb2.GLMessage.DataType.VOID):
                         var_name = "local_void_ptr_%d" % num_allocated_vars
                         # the parser patches some pointers to void from INTs to
@@ -1084,6 +1078,8 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
                         # This is used for generating texture ids, buffer ids, etc,
                         # so it needs to preserve the data across invocations
                         # XXX Where else is static needed?
+                        # XXX This is not true for cases like glGetProgram/ShaderInfoLog
+                        #     probably others?
                         # Remove the local prefix
                         var_name = "global_int_ptr_%d" % num_allocated_vars
                         var_type = "GLint"
@@ -1109,7 +1105,7 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
                             else:
                                 raise Exception("unhandled glDrawElements element type 0x%x" % msg.args[2].intValue[0])
 
-                        var_size *= len(arg.intValue)
+                        var_size *= (len(arg.intValue) + len(arg.int64Value))
 
                         # Using assets is specially important in the case of
                         # glDrawElements, although is not special-cased here,
@@ -1240,7 +1236,7 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
                     table = {}
                     translation_tables[table_name] = table
 
-                values = getattr(arg, field_name);
+                values = getattr(arg, field_name)
 
                 for value_index, value in enumerate(values):
                     table[value] = "%s[%d]" % (var_name, value_index)
@@ -1270,16 +1266,28 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
                 # Create the table
                 table = {}
                 translation_tables[table_name] = table
-            values = getattr(msg.returnValue, field_name);
+
+            # WAR: eglCreateContext is a special case, the CONTEXT_ID value
+            #      should be in the return value, but the trace actually passes
+            #      it in the second parameter
+            if (function_name == "eglCreateContext"):
+                values = msg.args[1].intValue
+                var_name = "global_EGLContext_%d" % num_allocated_vars
+                var_decl = "static EGLContext %s" % var_name
+                args_strings = ["param_DrawState_ptr_0"]
+
+            else:
+
+                values = getattr(msg.returnValue, field_name)
+                # Create a new variable to hold the return value
+                var_name = "global_unsigned_int_%d" % num_allocated_vars
+                var_decl = "static unsigned int %s" % var_name
 
             # We only expect one value being returned
             assert(len(values) == 1)
             value = values[0]
-
-            # Create a new variable to hold the return value
-            var_name = "global_unsigned_int_%d" % num_allocated_vars
             num_allocated_vars += 1
-            global_decls.append("static unsigned int %s" % var_name)
+            global_decls.append(var_decl)
 
             table[value] = var_name
             logger.debug("Updated table %s entry %d to return value %s" %
@@ -1327,23 +1335,23 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
 
     # Generate each frame
     for (frame_count, code) in enumerate(code_frames):
-        lines.append("void frame%s(AAssetManager* param_AAssetManager_ptr_0)" % frame_count)
+        lines.append("void frame%s(DrawState* param_DrawState_ptr_0)" % frame_count)
         lines.append("{")
         for line in code:
             lines.append("    %s;" % line)
         lines.append("}")
 
     # Generate the code that calls each frame
-    lines.append("void draw(AAssetManager* param_AAssetManager_ptr_0, int draw_limit, int frame_limit)")
+    lines.append("void draw(DrawState* param_DrawState_ptr_0)")
     lines.append("{")
-    lines.append("    switch (frame_limit)")
+    lines.append("    switch (param_DrawState_ptr_0->frame_limit)")
     lines.append("    {")
     for frame_index in xrange(len(code_frames)):
         lines.append("        case %d: " % frame_index)
-        lines.append("            frame%d(param_AAssetManager_ptr_0);" % frame_index)
+        lines.append("            frame%d(param_DrawState_ptr_0);" % frame_index)
         lines.append("        break;")
     lines.append("        default: ")
-    lines.append('            LOGI("Reached frame %d end of replay, exiting", frame_limit);')
+    lines.append('            LOGI("Reached frame %d end of replay, exiting", param_DrawState_ptr_0->frame_limit);')
     lines.append('            exit(EXIT_SUCCESS);')
     lines.append("    }")
     lines.append("}")
@@ -1370,9 +1378,9 @@ if (__name__ == "__main__"):
     ## trace_filepath ="_out/com.amazon.tv.launcher.notextures.gltrace.gz"
     ## trace_filepath ="_out/com.amazon.tv.launcher.gltrace.gz"
     ## trace_filepath = "_out/com.vectorunit.blue-60s-textures.gltrace.gz"
-    trace_filepath = "_out/com.vectorunit.blue-60s-textures.gltrace.gz"
+    trace_filepath = "twocontexts.gltrace.gz"
     output_dir = "_out"
-    gl_contexts_to_trace = [0]
+    gl_contexts_to_trace = None
 
     logging_format = "%(asctime).23s %(levelname)s:%(filename)s(%(lineno)d) [%(thread)d]: %(message)s"
 
@@ -1380,7 +1388,7 @@ if (__name__ == "__main__"):
     logger_handler.setFormatter(logging.Formatter(logging_format))
     logger.addHandler(logger_handler)
     # XXX This should be passed via parameter
-    logger.setLevel(logging.INFO)
+    logger.setLevel(logging.DEBUG)
 
     # Param 1 is trace name
     if (len(sys.argv) > 1):

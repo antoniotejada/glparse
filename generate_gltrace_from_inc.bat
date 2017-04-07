@@ -4,7 +4,7 @@ REM 2. Execute the apk on the device under --opengl-trace under parse
 REM 3. Extract the trace via glcap
 
 REM copy the trace include file into the output dir
-SET TRACE_INC_BASENAME=kipoprofile250
+SET TRACE_INC_BASENAME=wars
 MKDIR _out
 MKDIR _out\%TRACE_INC_BASENAME%
 COPY tests\glparse\includes\%TRACE_INC_BASENAME%.inc  _out\%TRACE_INC_BASENAME%\trace2.inc
@@ -15,7 +15,9 @@ build.py all --targets=ant,ndk,install ^
              --ndk-home=c:\android-ndk-r10d ^
              --ant-home=c:\apache-ant-1.9.4 ^
              --android-home=c:\android-sdk ^
+             --output-dir=_out\%TRACE_INC_BASENAME% ^
              --package-name=%TRACE_INC_BASENAME%
+
 
 IF %ERRORLEVEL% NEQ 0 GOTO END
 

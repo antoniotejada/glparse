@@ -5,13 +5,16 @@ static const GLsizei max_viewport_height = 1205;
 static const GLsizei max_scissor_width  = 800;
 static const GLsizei max_scissor_height = 1205;
 
-void draw(AAssetManager* param_AAssetManager_ptr_0, int draw_limit, int frame_limit)
+void draw(DrawState* param_DrawState_ptr_0)
 {
-    if (frame_limit > 0)
+    if (param_DrawState_ptr_0->frame_limit > 0)
     {
-        LOGI("Reached frame %d end of replay, exiting", frame_limit);
+        LOGI("Reached frame %d end of replay, exiting", param_DrawState_ptr_0->frame_limit);
         exit(EXIT_SUCCESS);
     }
+
+    EGLContext context = eglOverriddenCreateContext(param_DrawState_ptr_0);
+    eglOverriddenMakeCurrent(param_DrawState_ptr_0, context);
 
     glClearColor(1.0, 1.0, 1.0, 0.0);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);

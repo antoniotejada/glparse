@@ -63,6 +63,8 @@
 #define GL_ALPHA_TEST                     0x0BC0
 #define GL_POINT_BIT                      0x00000002
 #define GL_REPLACE_OLDEST_SUN             0x0003
+#define GL_FRAGMENT_SHADER_DERIVATIVE_HINT 0x8B8B
+#define GL_SAMPLE_BUFFERS_SGIS            0x80A
 
 // From Dekstop GL (Need for Speed sends those (?))
 #define GL_SAMPLE_ALPHA_TO_MASK_SGIS     0x809E
@@ -77,9 +79,12 @@
 #define GL_RGBA8 0x8058
 #endif
 
-// XXX Move to some common config file
-extern bool gl_enable_dither;
-extern bool gl_disable_dither;
+extern int engine_log_egl_context(const EGLDisplay display, const EGLContext context, int logLevel);
+
+
+// XXX There is a general problem with extensions: they appear in the GL ES
+//     trace but the code generator needs to retrieve the pointers and call
+//     them since they are not part of the .so files
 
 GL_APICALL void GL_APIENTRY glStartTilingQCOM (GLuint x, GLuint y, GLuint width, GLuint height, GLbitfield preserveMask)
 {
@@ -89,6 +94,23 @@ GL_APICALL void GL_APIENTRY glEndTilingQCOM (GLbitfield preserveMask)
 {
 
 }
+
+GL_APICALL void glBindVertexArrayOES(GLuint array)
+{
+
+}
+
+// XXX This is actually of ES 3.0, so it could work using a 3.0 SDK
+GL_APICALL void glInvalidateFramebuffer(GLenum target, GLsizei numAttachments,
+ 	const GLenum *attachments)
+{
+}
+
+GL_APICALL void GL_APIENTRY glDiscardFramebufferEXT(GLenum target, GLsizei numAttachments,
+    const GLenum *attachments)
+{
+}
+
 
 int openAsset(AAssetManager* pAssetManager, const char* filename, AAsset** ppAsset)
 {
@@ -120,8 +142,9 @@ int getAssetBuffer(AAsset* pAsset, const void** ppBuffer)
     return ret;
 }
 
-int openAndGetAssetBuffer(AAssetManager* pAssetManager, const char* filename, AAsset** ppAsset, const void** ppBuffer)
+int openAndGetAssetBuffer(DrawState* pDrawState, const char* filename, AAsset** ppAsset, const void** ppBuffer)
 {
+    AAssetManager* pAssetManager = pDrawState->pAssetManager;
     int ret = 0;
     ret = openAsset(pAssetManager, filename, ppAsset);
     if (ret == 0)
@@ -154,10 +177,6 @@ void glPopGroupMarkerEXT()
 // by gl2.h
 #define glMapBuffer glMapBufferOES
 #define glUnmapBuffer glUnmapBufferOES
-
-GL_APICALL void GL_APIENTRY glDiscardFramebufferEXT(GLenum target, GLsizei numAttachments, const GLenum *attachments)
-{
-}
 
 // XXX Implement this
 void *glMapBufferRange(GLenum target, GLintptr offset, GLsizeiptr length, GLbitfield access)
@@ -204,12 +223,86 @@ void glVertexAttribPointerData(GLuint index,  GLint size,  GLenum type,
                           (((char*) pointer) - rebaseInBytes));
 }
 
+EGLContext eglOverriddenCreateContext(DrawState* pDrawState);
+void eglOverriddenMakeCurrent(DrawState* pDrawState, EGLContext ctx);
+
 void glScaledViewport(GLint x, GLint y, GLsizei width, GLsizei height);
 void glScaledScissor(GLint x, GLint y, GLsizei width, GLsizei height);
-void glOverriddenDisable(GLenum cap);
-void glOverriddenEnable(GLenum cap);
+void glOverriddenDisable(DrawState* pDrawState, GLenum cap);
+void glOverriddenEnable(DrawState* pDrawState, GLenum cap);
 
 #include "trace2.inc"
+
+void eglOverriddenMakeCurrent(DrawState* pDrawState, EGLContext context)
+{
+    eglMakeCurrent(pDrawState->display, pDrawState->surface, pDrawState->surface, context);
+    LOGI("Context %p made current on surface %p, error 0x%x", context, pDrawState->surface, eglGetError());
+
+    // In general, try not to pollute GL execution with unnecessary GL calls,
+    // so this can be captured and replayed multiple times without piling up
+    // internal GL calls
+    // XXX Enable this on a configuration option
+    if (false)
+    {
+        // Dump GL information
+        LOGI("GL information");
+        LOGI("\tRenderer: %s", glGetString(GL_RENDERER));
+        LOGI("\tVendor: %s", glGetString(GL_VENDOR));
+        LOGI("\tVersion: %s", glGetString(GL_VERSION));
+        LOGI("\tShading Language: %s", glGetString(GL_SHADING_LANGUAGE_VERSION));
+        LOGI("\tExtensions: %s", glGetString(GL_EXTENSIONS));
+
+        // Initialize GL state.
+        if (pDrawState->gl_enable_dither)
+        {
+            glEnable(GL_DITHER);
+        }
+        else if (pDrawState->gl_disable_dither)
+        {
+            glDisable(GL_DITHER);
+        }
+
+        // glEnable(GL_CULL_FACE);
+        // glDisable(GL_DEPTH_TEST);
+    }
+}
+/**
+ * Create a context compatible with the current context and sharing resources
+ * with it
+ * WAR: Android OpenGL ES traces for eglCreateContext only contain the version
+ *      and the EGL_CONTEXT_ID resulting from the creation at trace recording time,
+ *      so there's little more that can be done (eg non sharing, using a different
+ *      config, etc).
+ */
+EGLContext eglOverriddenCreateContext(DrawState* pDrawState)
+{
+    EGLint context_attrib_list[] = {
+        EGL_CONTEXT_CLIENT_VERSION, 2,
+        EGL_NONE
+    };
+
+    EGLDisplay display = pDrawState->display;
+    EGLConfig config = pDrawState->config;
+    EGLContext sharee = (pDrawState->contexts != NULL) ?  pDrawState->contexts[0] : EGL_NO_CONTEXT;
+
+    EGLContext context = eglCreateContext(display, config, sharee, context_attrib_list);
+    if (context == EGL_NO_CONTEXT)
+    {
+        LOGE("Unable to create the context, error 0x%x", eglGetError());
+        exit(EXIT_FAILURE);
+    }
+
+    // Dump EGL context information
+    LOGI("Created context %p, error 0x%x", context, eglGetError());
+    engine_log_egl_context(display, context, ANDROID_LOG_INFO);
+
+    pDrawState->contexts = realloc(pDrawState->contexts,
+                                   sizeof(EGLContext) * (pDrawState->num_contexts + 1));
+    pDrawState->contexts[pDrawState->num_contexts] = context;
+    pDrawState->num_contexts++;
+
+    return context;
+}
 
 /**
  * Function to scale viewport calls on framebuffer 0 by the ratio between
@@ -235,12 +328,12 @@ void glScaledScissor(GLint x, GLint y, GLsizei width, GLsizei height)
                (height * egl_height)/max_scissor_height);
 }
 
-void glOverriddenEnable(GLenum cap)
+void glOverriddenEnable(DrawState* pDrawState, GLenum cap)
 {
     switch (cap)
     {
         case GL_DITHER:
-            if (!gl_disable_dither)
+            if (!pDrawState->gl_disable_dither)
             {
                 glEnable(cap);
             }
@@ -251,12 +344,12 @@ void glOverriddenEnable(GLenum cap)
     }
 }
 
-void glOverriddenDisable(GLenum cap)
+void glOverriddenDisable(DrawState* pDrawState, GLenum cap)
 {
     switch (cap)
     {
         case GL_DITHER:
-            if (!gl_enable_dither)
+            if (!pDrawState->gl_enable_dither)
             {
                 glDisable(cap);
             }
