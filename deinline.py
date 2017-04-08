@@ -213,7 +213,7 @@ def deinline(trace_filepath):
             for line in f:
 
                 # Ignore first-level braces and tag function end if needed
-                line = line.strip()
+                line = line.rstrip()
                 if (line == ""):
                     assert None is logger.debug("Found empty line")
 
@@ -234,82 +234,101 @@ def deinline(trace_filepath):
                 elif (line[0] == "}"):
                     assert None is logger.debug("Found closing brace %s" % repr(line))
                     brace_nest_level -= 1
+                    assert(brace_nest_level >= 0)
                     if (brace_nest_level == 0):
                         # Finish this frame and append
                         frames.append(frame)
                         frame_local_decls.append(function_decls)
 
-                elif (brace_nest_level == 0):
-                    assert None is logger.debug("Found global declaration %s" % repr(line))
-                    prev_line = line
-                    # Append to the global declarations until we've found a frame
-                    if (len(frames) == 0):
-                        global_decls.append(line)
-
-                elif (LOCAL_DECLARATION_REGEXP.match(line) is not None):
-                    # XXX This assumes that the local declarations can be
-                    #     moved above the code. This is the case with the
-                    #     trace generated one since it uses SSA names, but
-                    #     ideally it should only move declarations that are safe
-                    #     to move.
-                    logger.debug("Found local declaration %s" % repr(line))
-                    function_decls.append(line)
-
                 else:
-                    # Split into function and arguments
-                    # XXX This doesn't work for multiline
-                    # XXX This doesn't work for quotation marks (removes spaces)
-                    #     This happens to LOGI instructions in the generated code
-                    # XXX This breaks switch indentation (case, break and instructions
-                    #     are set to the same indentation)
-                    m = FUNCTION_PARAMETERS_REGEXP.match(line)
-                    if (m is not None):
-                        assert None is logger.debug("Found function call %s" % repr(line))
+                    line = line.lstrip()
+                    if (brace_nest_level == 0):
+                        assert None is logger.debug("Found global declaration %s" % repr(line))
+                        prev_line = line
+                        # Append to the global declarations until we've found a frame
+                        if (len(frames) == 0):
+                            global_decls.append(line)
 
-                        function_name = m.group('function_name').strip()
-                        function_args_string = m.group('function_args').strip()
-
-                        function_args = []
-
-                        # Remove parenthesis/type casts
-                        paren_nest_level = 0
-                        arg = ""
-                        for c in function_args_string:
-                            append_arg = False
-                            if (c == "("):
-                                paren_nest_level += 1
-                            elif (c == ")"):
-                                append_arg = (paren_nest_level == 1)
-                                paren_nest_level -= 1
-                            elif (c == ","):
-                                append_arg = True
-                            elif (c.isspace()):
-                                pass
-                            elif (paren_nest_level == 1):
-                                arg = arg + c
-
-                            if ((append_arg) and (arg != "")):
-                                function_args.append(arg)
-                                arg = ""
-
-                        # Set functions with no arguments to void to differentiate
-                        # from non-functions
-                        if (len(function_args) == 0):
-                            function_args = ["void"]
+                    elif (LOCAL_DECLARATION_REGEXP.match(line) is not None):
+                        # XXX This assumes that the local declarations can be
+                        #     moved above the code. This is the case with the
+                        #     trace generated one since it uses SSA names, but
+                        #     ideally it should only move declarations that are safe
+                        #     to move.
+                        logger.debug("Found local declaration %s" % repr(line))
+                        function_decls.append(line)
 
                     else:
-                        assert None is logger.debug("Found assignment, comments... %s" % repr(line))
-                        # XXX This is passing comments as functions which will make
-                        #     harder to deinline
+                        # Split into function and arguments
+                        # XXX This doesn't work for multiline
+                        # XXX This breaks switch indentation (case, break and instructions
+                        #     are set to the same indentation)
+                        m = FUNCTION_PARAMETERS_REGEXP.match(line)
+                        if (m is not None):
+                            function_name = m.group('function_name').strip()
+                            function_args_string = m.group('function_args').strip()
 
-                        # Pass non-function calls verbatim
-                        function_name = line
-                        # XXX This is a hack so we don't cause lack of sync between
-                        #     lists and lists of lists when a list of lists contains
-                        #     an empty list
-                        function_args = ["-"]
+                        if ((m is not None) and (function_name not in ['switch', 'if'])):
+                            assert None is logger.debug("Found function %s args %s call %s" %
+                                                        (function_name, function_args_string, repr(line)))
 
-                    frame.append([function_name] + function_args)
+                            function_args = []
+
+                            # Remove parenthesis/type casts
+                            # XXX We would still like to preserve
+                            #     (const void**) casts when invoking openAndGetAssetBuffer
+                            #     (void*) 0x0
+                            paren_nest_level = 0
+                            inside_quotes = False
+                            arg = ""
+                            for c in function_args_string:
+                                append_arg = False
+                                if ((c == '"') or inside_quotes):
+                                    arg = arg + c
+                                    if (c == '"'):
+                                        if (inside_quotes):
+                                            append_arg = True
+
+                                        inside_quotes = not inside_quotes
+
+                                elif (c == "("):
+                                    paren_nest_level += 1
+
+                                elif (c == ")"):
+                                    append_arg = (paren_nest_level == 1)
+                                    paren_nest_level -= 1
+
+                                elif (c == ","):
+                                    append_arg = True
+
+                                elif (c.isspace()):
+                                    pass
+
+                                elif (paren_nest_level == 1):
+                                    arg = arg + c
+
+                                if ((append_arg) and (arg != "")):
+                                    function_args.append(arg)
+                                    arg = ""
+
+                            # Set functions with no arguments to void to differentiate
+                            # from non-functions
+                            if (len(function_args) == 0):
+                                function_args = ["void"]
+
+                        else:
+                            assert None is logger.debug("Found assignment, comments... %s" % repr(line))
+                            # XXX This is passing comments as functions which will make
+                            #     harder to deinline
+
+                            # Pass non-function calls verbatim
+                            function_name = line
+                            # XXX This is a hack so we don't cause lack of sync between
+                            #     lists and lists of lists when a list of lists contains
+                            #     an empty list
+                            function_args = ["-"]
+
+                        frame.append([function_name] + function_args)
 
 
     def build_histogram_slow(substring_histogram, frame_strings):

@@ -38,21 +38,26 @@ logger = logging.getLogger(__name__)
 
 def count_lines_between_braces(lines):
     """!
-    Count the number of lines between braces
+    Count the number of non-empty lines between top level braces
     """
 
     braceNestingLevel = 0
     lineCount = 0
 
     for line in lines:
-        strippedLine = line.strip()
-        if (strippedLine == ""):
-            pass
-        elif (strippedLine == "{"):
+        line = line.rstrip()
+        topLevelNestStarts = False
+        if (line == "{"):
+            if (braceNestingLevel == 0):
+                topLevelNestStarts = True
             braceNestingLevel += 1
-        elif (strippedLine == "}"):
+
+        elif (line == "}"):
             braceNestingLevel -= 1
-        elif (braceNestingLevel > 0):
+
+        line = line.strip()
+        # Ignore blank lines
+        if (not topLevelNestStarts and (line != "") and (braceNestingLevel > 0)):
             lineCount += 1
 
         assert(braceNestingLevel >= 0)

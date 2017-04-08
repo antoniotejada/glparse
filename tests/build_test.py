@@ -73,9 +73,7 @@ def test_single_file(filename):
                           # XXX This should be taken from some per-test config
                           #     option
                           trace_contexts = None,
-                          # XXX Deinline is broken, removes braces, create a test,
-                          #     fix and activate here
-                          deinline = False,
+                          deinline = True,
                           ndk_debug = False,
                           ndk_home = r"c:\android-ndk-r10d",
                           ant_home = r"c:\apache-ant-1.9.4",

@@ -1,5 +1,4 @@
 // Test of the different parameter types
-
 void a(int param_int_0, unsigned int param_int_1, float param_float_2, char param_char_3, char* param_char_ptr_4)
 {
 
@@ -34,12 +33,14 @@ void f3(int param_int_0)
     a(global_int_0, global_int_1, global_float_2, global_char_3, global_char_ptr_7);
 }
 
-// Literals
+// Literals,
+// strings with commas to check that parameters ignore commas inside strings
+// strings with braces to check that parameters ignore braces inside strings
 void f4(int param_int_0)
 {
-    a(0, 1, 2.0, '3', "4");
-    a(0, 1, 2.0, '3', "4");
-    a(0, 1, 2.0, '3', "4");
+    a(0, 1, 2.0, '3', "a, b, c, d {");
+    a(0, 1, 2.0, '3', "a, b, c, d {");
+    a(0, 1, 2.0, '3', "a, b, c, d {");
 }
 
 // Array indexing

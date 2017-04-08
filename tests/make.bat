@@ -45,6 +45,6 @@ rem "%PYTHONPATH%" -c "import sys; sys.path.append('..'); import nose; nose.main
 rem this invocation doesn't work with multiprocess, invoke nose directly
 rem "%NOSEPATH%" ..\ %NOSEOPTS% %*
 
-"%PYTHONPATH%" -c "import sys; sys.path.append('..'); import nose; nose.main()" %NOSEOPTS% %*
+"%PYTHONPATH%" -c "import sys; sys.path.append('..'); import nose; nose.main()" %NOSEOPTS% %* > _out\make.log
 
 pause
