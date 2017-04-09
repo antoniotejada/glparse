@@ -4,7 +4,7 @@ REM 2. Execute the apk on the device under --opengl-trace under parse
 REM 3. Extract the trace via glcap
 
 REM copy the trace include file into the output dir
-SET TRACE_INC_BASENAME=wars
+SET TRACE_INC_BASENAME=resources
 MKDIR _out
 MKDIR _out\%TRACE_INC_BASENAME%
 COPY tests\glparse\includes\%TRACE_INC_BASENAME%.inc  _out\%TRACE_INC_BASENAME%\trace2.inc
@@ -34,5 +34,9 @@ REM Wait a bit for the application to start, otherwise glcap will error out
 timeout 2
 
 glcap.py capture --trace-filepath=%TRACE_INC_BASENAME%.gltrace.gz
+
+IF %ERRORLEVEL% NEQ 0 GOTO END
+
+adb logcat -d | find /I "native"
 
 :END

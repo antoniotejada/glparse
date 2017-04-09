@@ -360,7 +360,6 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
         ## glDeleteRenderBuffers
         ## glDeleteShader
         ## glDeleteTextures
-        ## glDetachShader
     }
 
     # Functions with arguments that require lookups from the translation machinery
@@ -382,16 +381,12 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
 
         "glCompileShader"   : { 0 : { "field" : "intValue", "table" : "shaders"      }},
 
-        # XXX Needs per-element lookup support
-        ## "glDeleteBuffers"   : { 1 : { "field" : "intValue", "table" : "buffers"      }},
-        # XXX Needs per-element lookup support
-        ## "glDeleteBuffers"   : { 1 : { "field" : "intValue", "table" : "framebuffers" }},
+        "glDeleteBuffers"   : { 1 : { "field" : "intValue", "table" : "buffers"      }},
+        "glDeleteFramebuffers"   : { 1 : { "field" : "intValue", "table" : "framebuffers" }},
         "glDeleteProgram"   : { 0 : { "field" : "intValue", "table" : "programs"     }},
-        # XXX Needs per-element lookup support
-        ## "glDeleteRenderBuffers" : { 1 : { "field" : "intValue", "table" : "renderbuffers"      }},
+        "glDeleteRenderbuffers" : { 1 : { "field" : "intValue", "table" : "renderbuffers"      }},
         "glDeleteShader"    : { 0 : { "field" : "intValue", "table" : "shaders"     }},
-        # XXX Needs per-element lookup support
-        ## "glDeleteTextures"   : { 1 : { "field" : "intValue", "table" : "textures" }},
+        "glDeleteTextures"   : { 1 : { "field" : "intValue", "table" : "textures" }},
         "glDetachShader"    : { 0 : { "field" : "intValue", "table" : "programs"     },
                                 1 : { "field" : "intValue", "table" : "shaders"      }},
         "glEGLImageTargetTexture2DOES" : { 1 : { "field" : "intValue", "table" : "textures" }},
@@ -400,6 +395,10 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
 
         "glGetActiveAttrib" : { 0: { "field" : "intValue", "table" : "programs"      },
                                 1: { "field" : "intValue", "context" : 0, "table" : "attribs" }},
+        # XXX Could the returned values be different at runtime than at trace time and cause
+        # buffer overflows for glGetActiveUniform?
+        # (the buffer limits are passed in by the program, maybe glparser should patch
+        # them to the obtained values or create the variables wrt the passed in values)
         "glGetActiveUniform": { 0: { "field" : "intValue", "table" : "programs"      },
                                 1: { "field" : "intValue", "context" : 0, "table" : "uniforms" }},
         "glGetAttachedShaders" : { 0 : { "field" : "intValue", "table" : "programs"     }},
@@ -424,8 +423,7 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
         # https://android.googlesource.com/platform/frameworks/native/+/3365c56716432d3bfdf41bb82fb08df821f41d0c/opengl/libs/GLES_trace/src/gltrace_fixup.cpp#305
         "glLinkProgram"     : { 0 : { "field" : "intValue", "table" : "programs"     }},
 
-        # XXX needs per-element lookup support
-        ##"glShaderBinary"    : { 1 : { "field" : "intValue", "table" : "shaders"      }},
+        "glShaderBinary"    : { 1 : { "field" : "intValue", "table" : "shaders"      }},
         "glShaderSource"    : { 0 : { "field" : "intValue", "table" : "shaders"      }},
 
         "glUniform1f"       : { 0 : { "field" : "intValue", "table" : "current_uniforms" }},
@@ -592,8 +590,6 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
 
         if (function_name == "eglMakeCurrent"):
             # First and only parameter is context index
-            logger.info("eglMakeCurrent %s" % msg)
-
             function_string = "eglOverriddenMakeCurrent"
             args_strings.append("param_DrawState_ptr_0")
 
@@ -609,7 +605,6 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
             #     - the config
             #     - whether to share or not
             # Create a shared context using the default configuration
-            logger.info("eglCreateContext %s" % msg)
             function_string = "eglOverriddenCreateContext"
 
         # Do translation machinery context in/out
@@ -796,6 +791,26 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
                     arg.isArray = True
                     arg.charValue.append("?" * get_shader_info_log_max_length)
 
+            elif (function_name == "glGetAttachedShaders"):
+                # WAR: The last two parameters are ints instead of pointers,
+                #      convert to those and set the count (second parametre) to 1,
+                #      since the result is not necessary and the trace doesn't
+                #      contain it
+                # XXX Alternatively we could get the size from the second argument
+                #     and create arrays of that size, but the result is not used
+                #     at replay time anyway so ignore it.
+                if (arg_index == 1):
+                    logger.debug("WAR: glGetAttachedShaders arg %d" % arg_index)
+                    arg.intValue[0] = 1
+
+                elif (arg_index == 2):
+                    logger.debug("WAR: glGetAttachedShaders arg %d" % arg_index)
+                    arg.isArray = True
+
+                elif (arg_index == 3):
+                    logger.debug("WAR: glGetAttachedShaders arg %d" % arg_index)
+                    arg.isArray = True
+
             elif ((function_name == "glGetShaderPrecisionFormat")):
                 # WAR: The last two parameters should be pointers but the trace
                 #      makes them ints
@@ -818,6 +833,7 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
                     arg.isArray = True
                     arg.type = gltrace_pb2.GLMessage.DataType.VOID
 
+
             elif (function_name == "glDiscardFramebufferEXT"):
                 # the last parameter in the trace is an INT instead of a pointer,
                 # convert to pointer
@@ -836,10 +852,6 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
                 # to signify that it's an array of char arrays
                 if (arg_index == 2):
                     arg.isArray = False
-                    # XXX Hacked support for external textures, change samplerExternalOES to
-                    #     to sampler2D
-                    logger.debug("Doing samplerExternalOES to sampler2D overlay")
-                    arg.charValue[0] = arg.charValue[0].replace("samplerExternalOES", "sampler2D")
 
                 # Always set the length pointer to zero, as we don't need it
                 # and passing random pointers causes errors otherwise
@@ -862,14 +874,6 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
                 # it's always an ENUM
                 # Switch to ENUM so it gets translated
                 arg.type = gltrace_pb2.GLMessage.DataType.ENUM
-
-            elif ((function_name in ["glTexImage2D", "glTexParameteri", "glBindTexture"]) and
-                  (arg_index == 0)):
-                if (arg.intValue[0] == 0x8D65):
-                    # XXX Hacked support for external textures by overlaying them on top of 2D
-                    #     textures
-                    logger.debug("Doing GL_TEXTURE_EXTERNAL_OES overlay on GL_TEXTURE_2D for %s" % function_name)
-                    arg.intValue[0] = 0x0DE1
 
             elif  (((function_name == "glTexImage2D") and (arg_index == 8)) or
                    ((function_name == "glTexSubImage2D") and (arg_index == 8)) or
@@ -898,7 +902,6 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
                     else:
                         arg.intValue[0] = 0
 
-
                 if (generate_empty_textures):
                     # Set the texture pointer to NULL
                     arg.type = gltrace_pb2.GLMessage.DataType.VOID
@@ -922,32 +925,52 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
                 # only do it in debug
                 assert None is logger.debug("Getting field %s" % str(field_name))
                 value = getattr(arg, field_name)
+
                 if (len(value) == 0):
                     logger.warning("Unexpected arg %s in function %s" % (str(arg), function_name))
                 else:
-                    if (field_name == "boolValue"):
-                        value = bool(int(value[0]))
-                    else:
-                        value = int(value[0])
-                    logger.debug("Looking up translation for 0x%x in %s" % (value, table_name))
-                    # The entry will not exist eg if we are binding back the NULL object
-                    # XXX This could be changed to there's a default 0-entry in all
-                    #     translation tables
-                    translation_table = translation_tables.get(table_name, {})
-                    try:
-                        translated_value = translation_table[value]
-                        # Converting from tree element to string doubles the execution time,
-                        # only do it in debug
-                        assert None is logger.debug("Translated %s to %s via %s" % (str(value), translated_value, table_name))
-                    except KeyError:
-                        pass
+                    # For array values we need to do this multiple times and create
+                    # a local var that will contain an array with all the translated
+                    # values
+                    translated_values = []
+                    for single_value in value:
+                        if (field_name == "boolValue"):
+                            single_value = bool(single_value)
+                        else:
+                            single_value = int(single_value)
+                        logger.debug("Looking up translation for 0x%x in %s" % (single_value, table_name))
+                        # The entry will not exist eg if we are binding back the NULL object
+                        # XXX This could be changed so there's a default 0-entry in all
+                        #     translation tables
+                        translation_table = translation_tables.get(table_name, {})
+                        try:
+                            translated_value = translation_table[single_value]
+                            # Converting from tree element to string doubles the execution time,
+                            # only do it in debug
+                            assert None is logger.debug("Translated %s to %s via %s" % (str(single_value), translated_value, table_name))
+                            translated_values.append(translated_value)
+                        except KeyError:
+                            pass
 
+                    if (arg.isArray and (len(translated_values) > 0)):
+                        logger.debug("Generating local array to hold translated values %s" % translated_values)
+                        # Create a temporary variable to hold all the translations
+                        # and use that one
+                        # XXX Check type
+                        var_name = "local_GLuint_ptr_%d" % num_allocated_vars
+                        preamble_strings.append("GLuint %s[] = { %s }" % (
+                            var_name,
+                            string.join(translated_values, ", ")))
+                        num_allocated_vars += 1
+                        translated_value = var_name
 
             # Fall-back to the global enums for untranslated enums
             # (this can happen eg for Google's fake AttribPointerData functions,
             # but also for functions out of gles2 which are not explicitly inserted
             # at initialization time)
-            if ((translated_value is None) and (arg.type == gltrace_pb2.GLMessage.DataType.ENUM)):
+            # Don't use the generic lookup for return values (isArray)
+            if ((translated_value is None) and (not arg.isArray) and
+                    (arg.type == gltrace_pb2.GLMessage.DataType.ENUM)):
                 logger.debug("Patching translation of enum %d to global table for %s" %
                     (arg.intValue[0], function_name))
                 translation_table = translation_tables['global']
@@ -1054,8 +1077,12 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
             #     can we tell the difference between glGenTextures and glDrawElements?
             # Note booleans have both len(intValue) and len(boolValue) greater
             # than zero
-            elif ((arg.isArray) and ((len(arg.intValue) > 0) or (len(arg.boolValue) > 0) or
-                (len(arg.charValue) > 0) or (len(arg.int64Value) > 0))):
+            # Note translated array values (eg glDeleteTextures) have already
+            # been put into a single array variable, so they don't need to be
+            # redeclared here
+            elif ((arg.isArray) and (translated_value is None) and
+                      ((len(arg.intValue) > 0) or (len(arg.boolValue) > 0) or
+                       (len(arg.charValue) > 0) or (len(arg.int64Value) > 0))):
 
                 # XXX Missing initializers for all but charvalue?
                 if (len(arg.boolValue) > 0):
@@ -1069,6 +1096,10 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
                         initializer = '"%s"' % arg.charValue[0]
                     preamble_strings.append("GLchar %s[] = %s" % (var_name, initializer))
                 elif ((len(arg.intValue) > 0) or (len(arg.int64Value) > 0)):
+                    if (len(arg.intValue) > 0):
+                        argIntValue = arg.intValue
+                    else:
+                        argIntValue = arg.int64Value
                     if (arg.type == gltrace_pb2.GLMessage.DataType.VOID):
                         var_name = "local_void_ptr_%d" % num_allocated_vars
                         # the parser patches some pointers to void from INTs to
@@ -1076,7 +1107,8 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
                         preamble_strings.append("GLvoid* %s[1]" % var_name)
                     else:
                         # This is used for generating texture ids, buffer ids, etc,
-                        # so it needs to preserve the data across invocations
+                        # so it needs to preserve the data across invocations,
+                        # store in global variables
                         # XXX Where else is static needed?
                         # XXX This is not true for cases like glGetProgram/ShaderInfoLog
                         #     probably others?
@@ -1105,13 +1137,22 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
                             else:
                                 raise Exception("unhandled glDrawElements element type 0x%x" % msg.args[2].intValue[0])
 
-                        var_size *= (len(arg.intValue) + len(arg.int64Value))
+                        var_size *= len(argIntValue)
+
+                        # Some array initializers need to be translated via the
+                        # ID tables to contain variables rather than literals
+                        if (function_name == "glDeleteRenderbuffers") and False:
+                            var_name = "local_GLubyte_ptr_%d" % num_allocated_vars
+                            var_initializers = [ translation_tables['renderbuffers'][i] for i in arg.intValue ]
+                            preamble_strings.append("GLubyte %s[] = { %s }" % (
+                                var_name,
+                                string.join(var_initializers, ", ")))
 
                         # Using assets is specially important in the case of
                         # glDrawElements, although is not special-cased here,
                         # it will use whatever min/max check is done on integer
                         # assets
-                        if ((use_assets_for_ints and
+                        elif ((use_assets_for_ints and
                             (var_size > min_int_asset_size_in_bytes)) or
                             (var_size > max_int_inlined_size_in_bytes)):
                             # Store in a short-lived asset if for glDrawElements index
@@ -1126,7 +1167,7 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
                                                                    asset_filename,
                                                                    "const %s*" % var_type,
                                                                    "global_AAsset_ptr_I",
-                                                                   string.join([struct.pack(pack_type, i) for i in arg.intValue],""),
+                                                                   string.join([struct.pack(pack_type, i) for i in argIntValue],""),
                                                                    global_decls))
                             # This is a short-lived asset only used in this GL call, could
                             # be freed after the call, but that complicates the asset
@@ -1139,12 +1180,12 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
                             #     inliner?
                             var_name = "global_int_ptr_%d" % num_allocated_vars
                             global_decls.append("static %s %s[%d] = {%s}" %
-                                        (var_type, var_name , len(arg.intValue),
-                                         string.join([str(i) for i in arg.intValue], ", ")))
+                                        (var_type, var_name , len(argIntValue),
+                                         string.join([str(i) for i in argIntValue], ", ")))
                 args_strings.append(var_name)
                 num_allocated_vars += 1
 
-            elif (arg.isArray):
+            elif ((arg.isArray) and (translated_value is None)):
                 raise Exception("unhandled array argument %s for %s" % (arg, msg))
 
             elif (len(arg.charValue) > 0):
@@ -1185,9 +1226,10 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
                 num_allocated_vars += 1
 
             elif (len(arg.int64Value) > 0):
-                # XXX Lollipop and later change all the pointers to 64-bit, what
-                #     to do about that?
-                args_strings.append("(GLvoid*) 0x%x" % ctypes.c_uint32(arg.int64Value[0]).value)
+                if (translated_value is not None):
+                    args_strings.append(str(translated_value))
+                else:
+                    args_strings.append("(GLvoid*) 0x%x" % ctypes.c_uint32(arg.int64Value[0]).value)
 
             elif (len(arg.intValue) > 0):
                 # XXX Don't hard-code this only to intValues
