@@ -26,6 +26,7 @@
   */
 #include <android/sensor.h>
 #include <EGL/egl.h>
+#include <EGL/eglext.h>
 #include <GLES2/gl2.h>
 #include <errno.h>
 #include <jni.h>
@@ -67,11 +68,23 @@ struct saved_state {
     int32_t width;
     int32_t height;
     struct saved_state state;
+
+    EGLSyncKHR sync;
 };
 
 // GL configuration default parameters
 bool gl_disable_dither = false;
 bool gl_enable_dither = false;
+// 0: Don't insert do glGetError
+// 1: Insert glGetError on every swapbuffers
+// XXX In the future also have gl_get_error on every gl command, etc
+int gl_get_error = 1;
+// Log the GL context (renderer, etc) when created
+bool gl_log_context = true;
+
+PFNEGLCREATESYNCKHRPROC eglCreateSyncKHR;
+PFNEGLDESTROYSYNCKHRPROC eglDestroySyncKHR;
+PFNEGLGETSYNCATTRIBKHRPROC eglGetSyncAttribKHR;
 
 // EGL configuration default parameters, overrides will be loaded at startup
 // -1 means EGL_DONT_CARE
@@ -91,6 +104,17 @@ int egl_stencil_size = EGL_DONT_CARE;
 extern int egl_width;
 extern int egl_height;
 int egl_samples = 0;
+
+// Type of sync on pbuffer swapbuffers
+// 0: No sync
+// 1: readpixels
+// 2: EGLSync
+// 3: glFinish
+#define EGL_SWAPBUFFERS_SYNC_NONE 0
+#define EGL_SWAPBUFFERS_SYNC_READPIXELS 1
+#define EGL_SWAPBUFFERS_SYNC_EGLSYNC 2
+#define EGL_SWAPBUFFERS_SYNC_GLFINISH 3
+int egl_swapbuffers_sync = EGL_SWAPBUFFERS_SYNC_NONE;
 
 // Runtime configuration parameters
 int draw_limit = 0;
@@ -471,6 +495,25 @@ static int engine_init_display(struct engine* engine)
 
     eglInitialize(display, 0, 0);
 
+    eglCreateSyncKHR = (PFNEGLCREATESYNCKHRPROC) eglGetProcAddress("eglCreateSyncKHR");
+    if (eglCreateSyncKHR == NULL)
+    {
+        LOGE("Unable to eglCreateSyncKHR, error 0x%x", eglGetError());
+        exit(EXIT_FAILURE);
+    }
+    eglDestroySyncKHR = (PFNEGLDESTROYSYNCKHRPROC) eglGetProcAddress("eglDestroySyncKHR");
+    if (eglDestroySyncKHR== NULL)
+    {
+        LOGE("Unable to eglCreateSyncKHR, error 0x%x", eglGetError());
+        exit(EXIT_FAILURE);
+    }
+    eglGetSyncAttribKHR = (PFNEGLGETSYNCATTRIBKHRPROC) eglGetProcAddress("eglGetSyncAttribKHR");
+    if (eglGetSyncAttribKHR == NULL)
+    {
+        LOGE("Unable to eglCreateSyncKHR, error 0x%x", eglGetError());
+        exit(EXIT_FAILURE);
+    }
+
     // Dump EGL information
     LOGI("EGL information on display %p", display);
     engine_log_egl_strings(display, ANDROID_LOG_INFO);
@@ -576,9 +619,10 @@ static int engine_init_display(struct engine* engine)
     //     default to the surface size
     if ((egl_width == 0) || (egl_height == 0))
     {
-        LOGI("No egl_width or egl_height provided, fetching both from EGLsurface");
         eglQuerySurface(display, surface, EGL_WIDTH, &egl_width);
         eglQuerySurface(display, surface, EGL_HEIGHT, &egl_height);
+        LOGI("Zero egl_width or egl_height provided, getting from EGLsurface %dx%d",
+            egl_width, egl_height);
     }
 
     // Now that the EGL config is chosen, update all the program config parameters 
@@ -620,6 +664,7 @@ static int engine_init_display(struct engine* engine)
 
     engine->drawState.gl_enable_dither = gl_enable_dither;
     engine->drawState.gl_disable_dither = gl_disable_dither;
+    engine->drawState.gl_log_context = gl_log_context;
 
     ret = 0;
 
@@ -651,7 +696,7 @@ void draw(DrawState* pDrawState);
 /**
  * Capture the current frame
  */
-static int capture_frame(const char* filedir)
+static int capture_frame(const char* filedir, unsigned int frame_index)
 {
     int ret = -1;
 
@@ -676,8 +721,8 @@ static int capture_frame(const char* filedir)
 
     // Save to disk
     char filename[PATH_MEDIUM] = "";
-    snprintf(filename, ARRAY_LENGTH(filename), "%s/frame%d.raw%s", 
-             filedir, frame_limit - 1, capture_compressed ? ".gz" : "");
+    snprintf(filename, ARRAY_LENGTH(filename), "%s/frame_%d_%d@%d_%d.raw%s",
+             filedir, egl_width, egl_height, bpp, frame_index, capture_compressed ? ".gz" : "");
     filename[ARRAY_LENGTH(filename)-1] = 0;
     if (capture_compressed)
     {
@@ -745,22 +790,73 @@ static void engine_draw_frame(struct engine* engine) {
         engine->drawState.frame_limit = input_adjusted_frame_limit;
 
         draw(&engine->drawState);
-        // XXX Disable this getError by command line option or it will pile up
-        //     in replay/capture cycles
-        LOGI("Frame %d GL error is 0x%x", input_adjusted_frame_limit, glGetError());
+        if (gl_get_error > 0)
+        {
+            LOGI("Frame %d GL error is 0x%x", input_adjusted_frame_limit, glGetError());
+        }
 
         timespec_t frame_end_time;
         clock_gettime(CLOCK_MONOTONIC, &frame_end_time);
         timespec_t frame_delta = timespec_delta(g_frame_start_time, frame_end_time);
         LOGI("Frame %d time is %3.3fms", input_adjusted_frame_limit, 
-                                         frame_delta.tv_nsec / 1000000.0);
+                                         ((frame_delta.tv_sec * 1000.0 + frame_delta.tv_nsec / 1000000.0)));
 
         // Before swapping, capture the frame if necessary
         bool capture_this_frame = ((capture_frequency > 0) && 
                                    ((input_adjusted_frame_limit % capture_frequency) == 0));
         if (capture_this_frame)
         {
-            capture_frame(engine->app->activity->internalDataPath);
+            capture_frame(engine->app->activity->internalDataPath, input_adjusted_frame_limit);
+        }
+
+        // Prevent optimizations that don't render anything when offscreen
+        // (Tegra4, Mali 450)
+        if (egl_pbuffer_bit)
+        {
+            LOGI("Doing egl_swapbuffers_sync %d", egl_swapbuffers_sync);
+            if (egl_swapbuffers_sync == EGL_SWAPBUFFERS_SYNC_READPIXELS)
+            {
+                // XXX This assumes there's a context current
+                GLenum format = (egl_alpha_size == 0) ? GL_RGB : GL_RGBA;
+                GLenum type = (egl_red_size == 8) ? GL_UNSIGNED_BYTE : ((egl_alpha_size == 1) ? GL_UNSIGNED_SHORT_5_5_5_1 : GL_UNSIGNED_SHORT_5_6_5);
+                GLsizei bpp = (egl_alpha_size == 8) ? 4 : ((egl_red_size == 8) ? 3 : 2);
+                GLubyte pixel[bpp];
+                GLint oldPackAlignment;
+                glGetIntegerv(GL_PACK_ALIGNMENT, &oldPackAlignment);
+                glPixelStorei(GL_PACK_ALIGNMENT, 1);
+                LOGD("Reading pixels format 0x%x type 0x%x bpp %d", format, type, bpp);
+                glReadPixels(0, 0, 1, 1, format, type, pixel);
+                glPixelStorei(GL_PACK_ALIGNMENT, oldPackAlignment);
+                LOGI("Read pixels, GL error is 0x%x", glGetError());
+            }
+            else if (egl_swapbuffers_sync == EGL_SWAPBUFFERS_SYNC_EGLSYNC)
+            {
+                EGLSyncKHR sync;
+                if (engine->sync != EGL_NO_SYNC_KHR)
+                {
+                    eglDestroySyncKHR(engine->drawState.display, engine->sync);
+                    engine->sync = EGL_NO_SYNC_KHR;
+                }
+                sync = eglCreateSyncKHR(engine->drawState.display, EGL_SYNC_FENCE_KHR, NULL);
+                if (sync == EGL_NO_SYNC_KHR)
+                {
+                    LOGE("Unable to create EGLSyncKHR, error 0x%x", eglGetError());
+                    exit(EXIT_FAILURE);
+                }
+                engine->sync = sync;
+                EGLint status;
+                if (!eglGetSyncAttribKHR(engine->drawState.display, sync, EGL_SYNC_STATUS_KHR, &status))
+                {
+                    LOGE("Unable to eglGetSyncAttribKHR, error 0x%x", eglGetError());
+                    exit(EXIT_FAILURE);
+                }
+            }
+            else if (egl_swapbuffers_sync == EGL_SWAPBUFFERS_SYNC_GLFINISH)
+            {
+                // XXX This assumes there's a context current and it's the one
+                //     that did the OpenGL rendering
+                glFinish();
+            }
         }
 
         // Swap this frame
@@ -770,9 +866,15 @@ static void engine_draw_frame(struct engine* engine) {
         clock_gettime(CLOCK_MONOTONIC, &swap_end_time);
         timespec_t swap_delta = timespec_delta(g_frame_start_time, swap_end_time);
         LOGI("Swap %d time is %3.3fms", input_adjusted_frame_limit, 
-                                        swap_delta .tv_nsec / 1000000.0);
+                                        ((swap_delta.tv_sec * 1000.0) + swap_delta .tv_nsec / 1000000.0));
     }
 
+    // XXX Allow looping, eg
+    //          loop_start_frame = 200
+    //          loop_end_frame = 400
+    //          loop_count = 0 (infinite)
+    //     or combine with start_frame and end_frame (discard frames - but not state-
+    //     until start)
     draw_limit++;
     frame_limit++;
     engine->animating = !stop_motion;
@@ -836,7 +938,7 @@ static void engine_handle_cmd(struct android_app* app, int32_t cmd) {
                 if (engine_init_display(engine) != 0)
                 {
                     LOGF("Display failed to initialize, aborting");
-                    abort();
+                    exit(EXIT_FAILURE);
                 }
                 engine_draw_frame(engine);
             }
@@ -904,6 +1006,8 @@ void activity_load_config(JNIEnv* env, ANativeActivity* activity)
 
     egl_samples = intent_get_int_extra(env, intent, "egl_samples", egl_samples);
 
+    egl_swapbuffers_sync = intent_get_int_extra(env, intent, "egl_swapbuffers_sync", egl_swapbuffers_sync);
+
     egl_width = intent_get_int_extra(env, intent, "egl_width", egl_width);
     egl_height = intent_get_int_extra(env, intent, "egl_height", egl_height);
 
@@ -916,6 +1020,8 @@ void activity_load_config(JNIEnv* env, ANativeActivity* activity)
 
     gl_enable_dither  = intent_get_boolean_extra(env, intent, "gl_enable_dither", gl_enable_dither);
     gl_disable_dither = intent_get_boolean_extra(env, intent, "gl_disable_dither", gl_disable_dither);
+    gl_log_context    = intent_get_boolean_extra(env, intent, "gl_log_context", gl_log_context);
+    gl_get_error      = intent_get_int_extra(env, intent, "gl_get_error", gl_get_error);
 
     draw_limit        = intent_get_int_extra(env, intent, "draw_limit", draw_limit);
     frame_limit       = intent_get_int_extra(env, intent, "frame_limit", frame_limit);
@@ -938,10 +1044,14 @@ void activity_load_config(JNIEnv* env, ANativeActivity* activity)
     LOGI("\tegl_depth_size: %d", egl_depth_size);
     LOGI("\tegl_stencil_size: %d", egl_stencil_size);
 
+    LOGI("\tegl_swapbuffers_sync: %d", egl_swapbuffers_sync);
+
     LOGI("GL configuration");
 
     LOGI("\tgl_enable_dither: %d", gl_enable_dither);
     LOGI("\tgl_disable_dither: %d", gl_disable_dither);
+    LOGI("\tgl_get_error: %d", gl_get_error);
+    LOGI("\tgl_log_context: %d", gl_log_context);
 
     LOGI("Runtime configuration");
 
@@ -992,6 +1102,8 @@ void android_main(struct android_app* state)
     state->onAppCmd = engine_handle_cmd;
     state->onInputEvent = engine_handle_input;
     engine.app = state;
+
+    engine.sync = EGL_NO_SYNC_KHR;
 
     // Prepare to monitor accelerometer
     engine.sensorManager = ASensorManager_getInstance();

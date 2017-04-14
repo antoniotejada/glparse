@@ -43,6 +43,7 @@ typedef struct {
     // (in case the trace didn't contain those calls)
     bool gl_enable_dither;
     bool gl_disable_dither;
+    bool gl_log_context;
 } DrawState;
 
 #define LOGV(...) ((void)__android_log_print(ANDROID_LOG_VERBOSE, "native-activity", __VA_ARGS__))

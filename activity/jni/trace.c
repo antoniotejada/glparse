@@ -250,8 +250,7 @@ void eglOverriddenMakeCurrent(DrawState* pDrawState, EGLContext context)
     // In general, try not to pollute GL execution with unnecessary GL calls,
     // so this can be captured and replayed multiple times without piling up
     // internal GL calls
-    // XXX Enable this on a configuration option
-    if (false)
+    if (pDrawState->gl_log_context)
     {
         // Dump GL information
         LOGI("GL information");
@@ -260,20 +259,20 @@ void eglOverriddenMakeCurrent(DrawState* pDrawState, EGLContext context)
         LOGI("\tVersion: %s", glGetString(GL_VERSION));
         LOGI("\tShading Language: %s", glGetString(GL_SHADING_LANGUAGE_VERSION));
         LOGI("\tExtensions: %s", glGetString(GL_EXTENSIONS));
-
-        // Initialize GL state.
-        if (pDrawState->gl_enable_dither)
-        {
-            glEnable(GL_DITHER);
-        }
-        else if (pDrawState->gl_disable_dither)
-        {
-            glDisable(GL_DITHER);
-        }
-
-        // glEnable(GL_CULL_FACE);
-        // glDisable(GL_DEPTH_TEST);
     }
+
+    // Initialize GL state.
+    if (pDrawState->gl_enable_dither)
+    {
+        glEnable(GL_DITHER);
+    }
+    else if (pDrawState->gl_disable_dither)
+    {
+        glDisable(GL_DITHER);
+    }
+
+    // glEnable(GL_CULL_FACE);
+    // glDisable(GL_DEPTH_TEST);
 }
 /**
  * Create a context compatible with the current context and sharing resources
