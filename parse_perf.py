@@ -18,6 +18,14 @@ device_to_gpu = {
     'kodiak' : "Adreno 320"
 }
 
+sync_type_to_name = {
+    'sync_0_pb_false' : "vsync",
+    'sync_0_pb_true' : "none",
+    'sync_1_pb_true' : "glReadPixels",
+    'sync_2_pb_true' : "EGLSyncKHR",
+    'sync_3_pb_true' : "glFinish",
+}
+
 logging_format = "%(asctime).23s %(levelname)s:%(filename)s(%(lineno)d) [%(thread)d]: %(message)s"
 logger_handler = logging.StreamHandler()
 logger_handler.setFormatter(logging.Formatter(logging_format))
@@ -29,7 +37,7 @@ max_frame = 800
 for res in ["720x1280", "1080x1920", "2160x3840"]:
     print res
     stats = {}
-    for filepath in glob.glob("*-%s-perf.log" % res):
+    for filepath in glob.glob("perf/*-%s-perf.log" % res):
         logger.debug(filepath)
         filename = os.path.basename(filepath)
         m = re.match(r"(\w+)-(\w+)-\d+x\d+-perf.log", filename)
@@ -60,7 +68,18 @@ for res in ["720x1280", "1080x1920", "2160x3840"]:
 
     for key in sorted(stats.keys()):
         filtered_stats = stats[key][min_frame:max_frame+1]
-        print "%s (%3.2f)\t" % (key, sum(filtered_stats) / len(filtered_stats)),
+        m = re.match(r"([^-]*).*", key)
+        gpu_name = m.group(1)
+        print "%s (%3.2f)\t" % (gpu_name, sum(filtered_stats) / len(filtered_stats)),
+    print
+
+    for key in sorted(stats.keys()):
+        filtered_stats = stats[key][min_frame:max_frame+1]
+        m = re.match(r".*(sync_\d_pb_\w+)_.*", key)
+
+        sync_type = m.group(1)
+        sync_name = sync_type_to_name[sync_type]
+        print "%s (%3.2f)\t" % (sync_name, sum(filtered_stats) / len(filtered_stats)),
     print
 
     for frame in xrange(len(stats[stats.keys()[0]])):

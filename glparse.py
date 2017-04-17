@@ -21,6 +21,7 @@
 
 import ctypes
 import errno
+import hashlib
 import logging
 import os
 import re
@@ -220,8 +221,15 @@ def update_translation_machinery_from_xml(translation_tables, translation_lookup
 
     logger.info("Updated translation machinery")
 
-def allocate_asset(allocated_assets, assets_dir, asset_buffer_ptr, asset_filename,
-                   asset_buffer_ptr_type, asset_variable_ptr, asset_bytes, global_decls):
+def hash_asset(asset_bytes):
+    hash = hashlib.md5()
+    hash.update(asset_bytes)
+
+    return hash.digest()
+
+def allocate_asset(allocated_assets, allocated_asset_filenames, assets_dir,
+                   asset_buffer_ptr, asset_filename, asset_buffer_ptr_type,
+                   asset_variable_ptr, asset_bytes, global_decls):
     """!
     Register the given asset and unregister
     """
@@ -245,6 +253,14 @@ def allocate_asset(allocated_assets, assets_dir, asset_buffer_ptr, asset_filenam
         global_decls.append("AAsset* %s = NULL" % asset_variable_ptr)
         global_decls.append("%s %s = NULL" % (asset_buffer_ptr_type, asset_buffer_ptr))
     allocated_assets.add(asset_variable_ptr)
+
+    asset_hash = hash_asset(asset_bytes)
+    # XXX This assumes there are no collisions
+    # XXX This should be done for all assets, not just for asset files
+    try:
+        asset_filename = allocated_asset_filenames[asset_hash]
+    except KeyError:
+        allocated_asset_filenames[asset_hash] = asset_filename
 
     # Save the asset to a file
     with open(os.path.join(assets_dir, asset_filename), "wb") as f:
@@ -287,6 +303,10 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
     # so we don't generate a variable with the same name twice
     num_allocated_vars = 0
     allocated_assets = set()
+    # Asset filenames indexed by the hash of the contents
+    # This is used for asset file coalescing (point two different assets to the
+    # same file if they have the same contents)
+    allocated_asset_filenames = {}
 
     logger.info("Tracing file %s" % trace_filepath)
     logger.info("Output dir %s" % output_dir)
@@ -998,6 +1018,7 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
                     # variable declaration is keyed off the asset variable name
 
                     preamble_strings.extend(allocate_asset(allocated_assets,
+                                                           allocated_asset_filenames,
                                                            assets_dir,
                                                            arg_name,
                                                            asset_filename,
@@ -1030,6 +1051,7 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
                         arg_name = "global_const_int_ptr_%d" % msg.args[0].intValue[0]
 
                         preamble_strings.extend(allocate_asset(allocated_assets,
+                                                               allocated_asset_filenames,
                                                                assets_dir,
                                                                arg_name,
                                                                asset_filename,
@@ -1045,6 +1067,7 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
                         # Allocate one asset specifically for ints, since the pointer
                         # variable declaration is keyed off the asset variable name
                         preamble_strings.extend(allocate_asset(allocated_assets,
+                                                               allocated_asset_filenames,
                                                                assets_dir,
                                                                arg_name,
                                                                asset_filename,
@@ -1162,6 +1185,7 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
                             # Allocate one asset specifically for ints, since the pointer
                             # variable declaration is keyed off the asset variable name
                             preamble_strings.extend(allocate_asset(allocated_assets,
+                                                                   allocated_asset_filenames,
                                                                    assets_dir,
                                                                    var_name,
                                                                    asset_filename,
@@ -1201,6 +1225,7 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
                     # Note we zero-terminate the string as required by
                     # glSetShaderSource when length is NULL
                     preamble_strings.extend(allocate_asset(allocated_assets,
+                                                           allocated_asset_filenames,
                                                            assets_dir,
                                                            arg_name,
                                                            asset_filename,

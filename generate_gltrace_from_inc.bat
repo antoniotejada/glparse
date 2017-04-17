@@ -18,14 +18,13 @@ build.py all --targets=ant,ndk,install ^
              --output-dir=_out\%TRACE_INC_BASENAME% ^
              --package-name=%TRACE_INC_BASENAME%
 
-
 IF %ERRORLEVEL% NEQ 0 GOTO END
 
 REM Run that apk and capture its gltrace
 
 SET PACKAGE=com.example.%TRACE_INC_BASENAME%
 SET ACTIVITY=android.app.NativeActivity
-SET PARAMS="--ez stop_motion false --ei frame_limit 0"
+SET PARAMS=--ez stop_motion false --ei frame_limit 0 --ez gl_log_context false
 
 adb shell am force-stop %PACKAGE%
 adb shell am start --opengl-trace %PARAMS% %PACKAGE%/%ACTIVITY%
@@ -33,7 +32,7 @@ adb shell am start --opengl-trace %PARAMS% %PACKAGE%/%ACTIVITY%
 REM Wait a bit for the application to start, otherwise glcap will error out
 timeout 2
 
-glcap.py capture --trace-filepath=%TRACE_INC_BASENAME%.gltrace.gz
+glcap.py capture --trace-filepath=%TRACE_INC_BASENAME%.gltrace.gz --store-textures
 
 IF %ERRORLEVEL% NEQ 0 GOTO END
 
