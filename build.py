@@ -97,7 +97,7 @@ def trace_command(trace_filepath = "_out/com.amazon.tv.launcher.gltrace.gz",
     scriptine.log.mark("Generating the trace.inc file")
     if (not scriptine.misc.options.dry):
 
-        if (scriptine.log._level <= scriptine.log.L_DEBUG):
+        if (scriptine.log._level <= scriptine.log.L_DEBUG): # pragma: no cover
             logger = logging.getLogger("glparse")
             logging_format = "%(asctime).23s %(levelname)s:%(filename)s(%(lineno)d) [%(thread)d]: %(message)s"
             logger_handler = logging.StreamHandler()
@@ -268,7 +268,7 @@ def ant_command(package_name = "Replayer", android_home = None, ant_home = None,
             "debug" ]
     check_call(cmds)
 
-def install_command(package_name = "Replayer", output_dir = "_out/Replayer"):
+def install_command(package_name = "Replayer", output_dir = "_out/Replayer"): # pragma: no cover
     """
     Install the package on the device (requires the 'ant' target to have been built
     beforehand).
@@ -287,7 +287,7 @@ def install_command(package_name = "Replayer", output_dir = "_out/Replayer"):
     apk_path = output_dir.joinpath("bin", "%s-debug.apk" % package_name)
     os_system("adb install -r %s" % apk_path)
 
-def run_command(package_name = "Replayer", run_options = ""):
+def run_command(package_name = "Replayer", run_options = ""): # pragma: no cover
     """
     Run the package on the device (requires the 'install' target to have been built
     beforehand).

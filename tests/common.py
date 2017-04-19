@@ -97,7 +97,7 @@ def declare_per_file_functions(filepaths, modulename, test_single_file):
         # Add it to the module
         setattr(sys.modules[modulename], fn_name, wrapper)
 
-def invoke_per_file_functions(modulename):
+def invoke_per_file_functions(modulename): # pragma: no cover
     import inspect
 
     # Run all the testXXXXX functions, unless decorated with @nose.tools.nottest

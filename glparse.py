@@ -1162,20 +1162,11 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
 
                         var_size *= len(argIntValue)
 
-                        # Some array initializers need to be translated via the
-                        # ID tables to contain variables rather than literals
-                        if (function_name == "glDeleteRenderbuffers") and False:
-                            var_name = "local_GLubyte_ptr_%d" % num_allocated_vars
-                            var_initializers = [ translation_tables['renderbuffers'][i] for i in arg.intValue ]
-                            preamble_strings.append("GLubyte %s[] = { %s }" % (
-                                var_name,
-                                string.join(var_initializers, ", ")))
-
                         # Using assets is specially important in the case of
                         # glDrawElements, although is not special-cased here,
                         # it will use whatever min/max check is done on integer
                         # assets
-                        elif ((use_assets_for_ints and
+                        if ((use_assets_for_ints and
                             (var_size > min_int_asset_size_in_bytes)) or
                             (var_size > max_int_inlined_size_in_bytes)):
                             # Store in a short-lived asset if for glDrawElements index
@@ -1428,7 +1419,7 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
 
     return lines
 
-if (__name__ == "__main__"):
+if (__name__ == "__main__"): # pragma: no cover
     ## trace_filepath = "_out/bmk_hw_layer_use_color_hw_layer.gltrace.gz"
     ## trace_filepath"_out/com.amazon.kindle.otter.gltrace.gz"
     ## trace_filepath"_out\contactsShowcaseAnimation.gltrace.gz"

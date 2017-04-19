@@ -18,7 +18,7 @@ import sys
 # XXX This is so __main__ can find build.py and the unit tests can be debugged
 #     by running __main__. Is there a better way? Can unit tests be debugged from
 #     nose itself?
-if __name__ == '__main__':
+if __name__ == '__main__': # pragma: no cover
     sys.path.append('..')
 
 import nose
@@ -96,7 +96,7 @@ def test_single_file(filename):
 
 filepaths = glob.glob(os.path.join(TEST_FILES_FILEDIR, "*.gz"))
 filepaths += glob.glob(os.path.join(TEST_FILES_FILEDIR, "*.gltrace"))
-if __name__ == '__main__':
+if __name__ == '__main__': # pragma: no cover
     for l in [logging.getLogger("build"), logging.getLogger(__name__),
               logging.getLogger('common')]:
         l.setLevel(logging.DEBUG)
@@ -110,5 +110,5 @@ if __name__ == '__main__':
 
 common.declare_per_file_functions(filepaths, __name__, test_single_file)
 
-if (__name__ == '__main__'):
+if (__name__ == '__main__'): # pragma: no cover
     common.invoke_per_file_functions(__name__)

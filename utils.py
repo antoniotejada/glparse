@@ -43,7 +43,7 @@ def xopen(filepath, mode = 'rb', compresslevel=9):
 
     return file
 
-def xgetsize(filepath):
+def xgetsize(filepath): # pragma: no cover
     # Guess from the filename whether to decompress or not
     if (filepath.endswith(".gz")):
         compressed = True

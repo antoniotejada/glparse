@@ -331,7 +331,7 @@ def deinline(trace_filepath):
                         frame.append([function_name] + function_args)
 
 
-    def build_histogram_slow(substring_histogram, frame_strings):
+    def build_histogram_slow(substring_histogram, frame_strings): # pragma: no cover
         # Don't bother with very short substrings
         min_substring_length = 2
         substring_hash_histogram = {}
@@ -1134,7 +1134,7 @@ def deinline(trace_filepath):
 
     return lines
 
-if (__name__ == "__main__"):
+if (__name__ == "__main__"): # pragma: no cover
     logging_format = "%(asctime).23s %(levelname)s:%(filename)s(%(lineno)d) [%(thread)d]: %(message)s"
 
     logger_handler = logging.StreamHandler()
