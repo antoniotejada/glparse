@@ -4,7 +4,7 @@ void a(int param_int_0, unsigned int param_int_1, float param_float_2, char para
 
 }
 
-void b(int* param_int_0_ptr, unsigned int* param_int_1_ptr, float* param_float_2_ptr, char* param_char_ptr_3)
+void b(int* param_int_ptr_0, unsigned int* param_int_ptr_1, float* param_float_ptr_2, char* param_char_ptr_3)
 {
 
 }
@@ -62,7 +62,7 @@ void f6(int param_int_0)
 // Address-of
 void f7(int param_int_0)
 {
-    b(&param_int_0, &param_int_1, &param_float2, &param_char_3);
-    b(&param_int_0, &param_int_1, &param_float2, &param_char_3);
-    b(&param_int_0, &param_int_1, &param_float2, &param_char_3);
+    b(&param_int_0, &param_int_1, &param_float_2, &param_char_3);
+    b(&param_int_0, &param_int_1, &param_float_2, &param_char_3);
+    b(&param_int_0, &param_int_1, &param_float_2, &param_char_3);
 }

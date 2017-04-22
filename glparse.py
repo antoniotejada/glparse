@@ -350,7 +350,7 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
     # argument's index that should be inserted, or -1 if the return value should
     # be inserted
     translation_insertions = {
-        #  WAR The trace contains the context id in the second parameter instead
+        #  WAR: The trace contains the context id in the second parameter instead
         #      of the return value, treat this as if the value was being returned
         #      and special case it later
         "eglCreateContext"  : { -1 : { "field" : "intValue", "table" : "contexts"  }},
@@ -590,8 +590,20 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
                                "glVertexAttrib2fv",
                                "glVertexAttrib3fv",
                                "glVertexAttrib4fv"]) and not msg.args[1].isArray):
-            # WAR glVertexAttrib4fv doesn't provide data, ignore it
+            # WAR: glVertexAttrib4fv doesn't provide data, ignore it
             logger.warning("Ignoring glVertexAttribNv function as the trace doesn't provide the value")
+            logger.debug(msg)
+            continue
+
+        if (function_name == "glGetActiveUniform"):
+            logger.warning("Ignoring glGetActiveUniform as the trace doesn't provide a pointer")
+            logger.debug(msg)
+            continue
+
+        if (function_name == "glDiscardFramebufferEXT"):
+            # WAR: glDiscardFrameBufferEXT doesn't provide the frambufferse to
+            #      discard, ignore
+            logger.warning("Ignoring glDiscardFrameBufferEXT as the trace doesn't provide the value")
             logger.debug(msg)
             continue
 
@@ -620,7 +632,7 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
 
         if (function_name == "eglCreateContext"):
             # First parameter is EGL version, second is returned context index
-            # WAR There's no information about:
+            # WAR: There's no information about:
             #     - the surface
             #     - the config
             #     - whether to share or not
@@ -768,13 +780,12 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
                 arg.isArray = True
 
             elif ((function_name == "glGetActiveUniform") and (arg_index == 7)):
-                # XXX The trace sends an extra int with some index?
+                # WAR: The trace sends an extra int with some index?
                 continue
 
-            elif (function_name == "glGetActiveAttrib"):
-                if (arg_index == 7):
-                    # XXX The trace sends an extra int with some index?
-                    continue
+            elif ((function_name == "glGetActiveAttrib") and (arg_index == 7)):
+                # WAR: The trace sends an extra int with some index?
+                continue
 
             elif ((function_name == "glDrawElements") and (arg_index == 3)):
                 if (not arg.isArray):
@@ -851,14 +862,6 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
                 if (arg_index == 2):
                     logger.debug("WAR: glGetVertexAttribPointerv arg %d" % arg_index)
                     arg.isArray = True
-                    arg.type = gltrace_pb2.GLMessage.DataType.VOID
-
-
-            elif (function_name == "glDiscardFramebufferEXT"):
-                # the last parameter in the trace is an INT instead of a pointer,
-                # convert to pointer
-                if (arg_index == 2):
-                    logger.debug("Patching parameter of glDiscardFramebufferEXT")
                     arg.type = gltrace_pb2.GLMessage.DataType.VOID
 
             elif (function_name == "glVertexAttribPointer"):
@@ -1048,7 +1051,7 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
                     asset_filename = "int_asset_%d" % num_allocated_vars
 
                     if (function_name == "glVertexAttribPointerData"):
-                        arg_name = "global_const_int_ptr_%d" % msg.args[0].intValue[0]
+                        arg_name = "global_const_unsigned_int_ptr_%d" % msg.args[0].intValue[0]
 
                         preamble_strings.extend(allocate_asset(allocated_assets,
                                                                allocated_asset_filenames,
@@ -1063,7 +1066,7 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
                         # that name
                         # XXX Need to free the assets at the end of the trace
                     else:
-                        arg_name = "global_const_int_ptr_I"
+                        arg_name = "global_const_unsigned_int_ptr_I"
                         # Allocate one asset specifically for ints, since the pointer
                         # variable declaration is keyed off the asset variable name
                         preamble_strings.extend(allocate_asset(allocated_assets,
@@ -1136,10 +1139,10 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
                         # XXX This is not true for cases like glGetProgram/ShaderInfoLog
                         #     probably others?
                         # Remove the local prefix
-                        var_name = "global_int_ptr_%d" % num_allocated_vars
-                        var_type = "GLint"
+                        var_name = "global_unsigned_int_ptr_%d" % num_allocated_vars
+                        var_type = "GLuint"
                         var_size = 4
-                        pack_type = "i"
+                        pack_type = "I"
                         # glDrawElements can use different element sizes, use
                         # the proper type
                         # XXX Is there any other function with different int sizes?
@@ -1149,11 +1152,13 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
                             if (msg.args[2].intValue[0] == 0x1403):
                                 var_size = 2
                                 var_type = "GLushort"
+                                var_name = "global_GLushort_ptr_%d" % num_allocated_vars
                                 pack_type = "H"
 
                             # GL_UNSIGNED_BYTE 0x1401
                             elif (msg.args[2].intValue[0] == 0x1401):
                                 var_type = "GLubyte"
+                                var_name = "global_GLubyte_ptr_%d" % num_allocated_vars
                                 var_size = 1
                                 pack_type = "B"
 
@@ -1171,7 +1176,7 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
                             (var_size > max_int_inlined_size_in_bytes)):
                             # Store in a short-lived asset if for glDrawElements index
                             # buffer and above the minimum asset size
-                            var_name = "global_const_int_ptr_I"
+                            var_name = "global_const_unsigned_int_ptr_I"
                             asset_filename = "int_asset_%d" % num_allocated_vars
                             # Allocate one asset specifically for ints, since the pointer
                             # variable declaration is keyed off the asset variable name
@@ -1193,7 +1198,6 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
                             # XXX This can be moved to a local for glDrawElements
                             #     only, but would that make things harder for the
                             #     inliner?
-                            var_name = "global_int_ptr_%d" % num_allocated_vars
                             global_decls.append("static %s %s[%d] = {%s}" %
                                         (var_type, var_name , len(argIntValue),
                                          string.join([str(i) for i in argIntValue], ", ")))
@@ -1359,7 +1363,8 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
         program_line = "%s(%s)" % (function_string, string.join(args_strings, ", "))
         code.append(program_line)
         if (insert_alog_after_gl_functions):
-            code.append('LOGI("0x%%x: %s", glGetError())' % program_line)
+            code.append('gl_error=glGetError()')
+            code.append('LOGI("0x%%x: %s", gl_error)' % program_line)
         if (insert_glfinish_after_gl_functions):
             code.append("glFinish()")
         code.extend(epilogue_strings)
@@ -1384,6 +1389,7 @@ def glparse(trace_filepath, output_dir, assets_dir, gl_contexts_to_trace):
     # These are exposed to the EGL surface creation
     global_decls.append("int egl_width  = %d" % egl_width)
     global_decls.append("int egl_height = %d" % egl_height)
+    global_decls.append("GLenum gl_error = 0")
 
     # Generate the global declarations
     lines = []
@@ -1446,7 +1452,7 @@ if (__name__ == "__main__"): # pragma: no cover
     logger_handler.setFormatter(logging.Formatter(logging_format))
     logger.addHandler(logger_handler)
     # XXX This should be passed via parameter
-    logger.setLevel(logging.DEBUG)
+    logger.setLevel(logging.INFO)
 
     # Param 1 is trace name
     if (len(sys.argv) > 1):

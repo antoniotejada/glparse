@@ -150,7 +150,17 @@ int openAndGetAssetBuffer(DrawState* pDrawState, const char* filename, AAsset** 
     if (ret == 0)
     {
         ret = getAssetBuffer(*ppAsset, ppBuffer);
+        if (ret != 0)
+        {
+            LOGE("Unable to getAssetBuffer %s, error %d", filename, ret);
+        }
     }
+    else
+    {
+        LOGE("Unable to openAsset %s, error %d", filename, ret);
+    }
+
+    LOGD("openAndGetAssetBuffer %p", *ppBuffer);
 
     return ret;
 }
@@ -202,6 +212,8 @@ void glVertexAttribPointerData(GLuint index,  GLint size,  GLenum type,
     // zero in that case as the trace capture cannot get to the indices either - 
     // or if any part of the shader pipeline acts differently depending on the 
     // index value)
+
+    LOGD("glVertexAttribPointerData %p", pointer);
 
     int rebaseInBytes = 0;
     // Don't bother calculating the rebase if the buffer doesn't need to be rebased

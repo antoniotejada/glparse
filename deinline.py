@@ -72,6 +72,10 @@ logger = logging.getLogger(__name__)
 # XXX Missing passing window size, increment
 def deinline(trace_filepath):
 
+    ## FUNCTION_PARAMETERS_REGEXP = re.compile(r"\s*(?P<function_name>[^(]+)\((?P<function_args>.*)\)")
+    FUNCTION_PARAMETERS_REGEXP = re.compile(r"\s*(?P<function_name>[^(]+)(?P<function_args>\(.*)")
+    FUNCTION_PROTOTYPE_REGEXP = re.compile(r"\s*(?P<function_name_and_return_type>[^(]+)\((?P<function_arg_type_and_names>.*)\)")
+
     def dump_code(frame_strings, frame_prototypes, frame_actual_parameters, frame_local_decls, global_decls):
         lines = []
         for decl in global_decls:
@@ -79,8 +83,44 @@ def deinline(trace_filepath):
         # Add the function declarations, otherwise gcc guesses the types wrong
         # (doubles instead of floats, etc)
         lines.append("")
+
+        # Initialize the function name to formal parameter c types to some
+        # functions that are known to take multiple types have their parameters
+        # type-casted and don't cause compiler error/warnings
+        # XXX This is not ideal, since it's GL-specific, another option would be
+        #     to provide these as function prototypes in the input file, but they
+        #     would need to be parsed
+        # XXX Note that using GL types forces the caller to always cast, since
+        #     get_c_type_from_mangled_name only returns basic C types for immediate
+        #     values
+        function_formal_parameter_c_types = {
+            'glDrawElements' : [ "GLenum", "GLsizei", "GLenum", "const GLvoid*" ],
+            'glVertexAttribPointer' : ["GLuint", "GLint", "GLenum", "GLboolean", "GLsizei", "const GLvoid*"],
+            'glTexImage2D' : ["GLenum", "GLint", "GLint", "GLsizei", "GLsizei", "GLint", "GLenum", "GLenum", "const GLvoid*" ],
+            'openAndGetAssetBuffer' : ["DrawState*", "const char*", "AAsset**", "const void**"],
+            'glDiscardFrameBufferEXT' : ["GLenum", "GLsizei", "const GLenum*"]
+        }
         for (frame_index, frame_string) in enumerate(frame_prototypes):
+            # Add the prototypes to the code
             lines.append("%s;" % frame_prototypes[frame_index])
+
+            # Generate the list of formal parameter types for this function to
+            # be used later whenever actual parameter casting is required
+            m = FUNCTION_PROTOTYPE_REGEXP.match(frame_string)
+            function_name = m.group('function_name_and_return_type').split(" ")[-1]
+            function_type_and_formal_parameters = m.group('function_arg_type_and_names').strip()
+            # This will be empty if there are no parameters
+            if (function_type_and_formal_parameters != ""):
+                function_type_and_formal_parameters = function_type_and_formal_parameters.split(",")
+                function_formal_parameter_c_types[function_name] = []
+                assert None is logger.debug("Building c types for prototype %s" % function_name)
+                for param_index, formal_parameter in enumerate(function_type_and_formal_parameters):
+                    formal_parameter_mangled_name = formal_parameter.split(" ")[-1]
+                    formal_parameter_c_type = get_c_type_from_mangled_name(formal_parameter_mangled_name)
+                    function_formal_parameter_c_types[function_name].append(formal_parameter_c_type)
+                assert None is logger.debug("Generated formal parameter c types for %s %s" %
+                                            (function_name, function_formal_parameter_c_types[function_name]))
+
         lines.append("")
         # Add the function definitions
         for (frame_index, frame_string) in enumerate(frame_strings):
@@ -103,22 +143,44 @@ def deinline(trace_filepath):
                 elif (char_to_function[c] == "switch"):
                     # Don't semi-colon terminate switches
                     lines.append("    %s(%s)" % (char_to_function[c], string.join(frame_actual_parameters[frame_index][c_index], ", ")))
-                # XXX Don't special-case getVertexAttribPointer,
-                #     do it in a generic way, as fixing it here has limited
-                #     applicability (you still get warnings when an intermediate
-                #     function is called with two different parameter types)
-                elif (char_to_function[c] == "glVertexAttribPointer"):
-                    # Cast to void to silence warnings
-                    lines.append("    %s(%s, %s, %s, %s, %s, (GLvoid const*) %s);" % (
-                          "glVertexAttribPointer",
-                          frame_actual_parameters[frame_index][c_index][0],
-                          frame_actual_parameters[frame_index][c_index][1],
-                          frame_actual_parameters[frame_index][c_index][2],
-                          frame_actual_parameters[frame_index][c_index][3],
-                          frame_actual_parameters[frame_index][c_index][4],
-                          frame_actual_parameters[frame_index][c_index][5]))
                 else:
-                    lines.append("    %s(%s);" % (char_to_function[c], string.join(frame_actual_parameters[frame_index][c_index], ", ")))
+                    # Look for the callee function and add type casting if the
+                    # actual parameter and formal parameter types differ
+                    # Some OpenGL functions take integers or pointers indistinctly
+                    # (eg glDrawElements), a casting is needed to avoid compiler
+                    # errors when warnings are treated as errors
+                    # Get the formal parameter type by extracting the formal parametre
+                    # type name and unmangling
+                    # Some functions
+                    casted_actual_parameters = []
+                    # Leaf functions don't have prototypes, no need to do typecasting
+                    # for those (leaf functions that should be type casted are done
+                    # initializing function_formal_parameter_c_types)
+                    formal_parameter_c_types = function_formal_parameter_c_types.get(char_to_function[c], None)
+                    assert None is logger.debug("Casting %s actual parameters %s to formal c types %s " %
+                                                (char_to_function[c],
+                                                 repr(frame_actual_parameters[frame_index][c_index]),
+                                                 repr(formal_parameter_c_types)))
+                    for actual_param_index, actual_parameter in enumerate(frame_actual_parameters[frame_index][c_index]):
+                        if (formal_parameter_c_types is None):
+                            # Don't even try to get the actual_parameter_c_type
+                            # since this may be a function whose parameters don't
+                            # understand (EXIT_SUCCESS, etc)
+                            formal_parameter_c_type = None
+                            actual_parameter_c_type = None
+                        else:
+                            actual_parameter_c_type = get_c_type_from_mangled_name(actual_parameter)
+                            formal_parameter_c_type = formal_parameter_c_types[actual_param_index]
+                        assert None is logger.debug("Type casting for parameter %d, %s vs. %s" %
+                                                    (actual_param_index,
+                                                     actual_parameter_c_type,
+                                                     formal_parameter_c_type))
+                        if (formal_parameter_c_type != actual_parameter_c_type):
+                            casted_actual_parameters.append("(%s) %s" % (formal_parameter_c_type, actual_parameter))
+                        else:
+                            casted_actual_parameters.append("%s" % actual_parameter)
+
+                    lines.append("    %s(%s);" % (char_to_function[c], string.join(casted_actual_parameters, ", ")))
             lines.append("}")
             lines.append("")
 
@@ -145,11 +207,12 @@ def deinline(trace_filepath):
             # If it doesn't match a mangled variable name, it has to be a literal
             # (integer, float, enum or string)
             if (mangled_name[0] == '"'):
-                c_type = "char *"
+                c_type = "const char *"
             elif (mangled_name[0] == "'"):
                 c_type = "char"
             elif (mangled_name.startswith("GL_")):
-                c_type = "unsigned int"
+                # XXX Should this trap other enums like EXIT_SUCCESS?
+                c_type = "GLenum"
             else:
                 try:
                     i = int(mangled_name)
@@ -158,6 +221,7 @@ def deinline(trace_filepath):
                     try:
                         i = int(mangled_name, 16)
                         c_type = "unsigned int"
+
                     except ValueError:
                         f = float(mangled_name)
                         c_type = "float"
@@ -192,6 +256,81 @@ def deinline(trace_filepath):
 
         return c_type.replace(" ", "_").replace("*", "ptr")
 
+
+    def parse_c_function_call(line):
+        # Split into function and arguments
+        # XXX This doesn't work for multiline
+        # XXX This breaks switch indentation (case, break and instructions
+        #     are set to the same indentation)
+
+        m = FUNCTION_PARAMETERS_REGEXP.match(line)
+        if (m is not None):
+            function_name = m.group('function_name').strip()
+            function_args_string = m.group('function_args').strip()
+
+        if ((m is not None) and (function_name not in ['switch', 'if'])):
+
+            function_args = []
+
+            # Remove parenthesis/type casts
+            # XXX We would still like to preserve
+            #     (const void**) casts when invoking openAndGetAssetBuffer
+            #     (void*) 0x0
+            paren_nest_level = 0
+            inside_quotes = False
+            arg = ""
+            for c in function_args_string:
+                append_arg = False
+                if ((c == '"') or inside_quotes):
+                    arg = arg + c
+                    if (c == '"'):
+                        if (inside_quotes):
+                            append_arg = True
+
+                        inside_quotes = not inside_quotes
+
+                elif (c == "("):
+                    paren_nest_level += 1
+
+                elif (c == ")"):
+                    append_arg = (paren_nest_level == 1)
+                    paren_nest_level -= 1
+
+                elif (c == ","):
+                    append_arg = True
+
+                elif (c.isspace()):
+                    pass
+
+                elif (paren_nest_level == 1):
+                    arg = arg + c
+
+                if ((append_arg) and (arg != "")):
+                    function_args.append(arg)
+                    arg = ""
+
+            # Set functions with no arguments to void to differentiate
+            # from non-functions
+            if (len(function_args) == 0):
+                function_args = ["void"]
+
+            assert None is logger.debug("Found function %s args %s call %s" %
+                                        (function_name, function_args, repr(line)))
+
+        else:
+            assert None is logger.debug("Found assignment, comments... %s" % repr(line))
+            # XXX This is passing comments as functions which will make
+            #     harder to deinline
+
+            # Pass non-function calls verbatim
+            function_name = line
+            # XXX This is a hack so we don't cause lack of sync between
+            #     lists and lists of lists when a list of lists contains
+            #     an empty list
+            function_args = ["-"]
+
+        return function_name, function_args
+
     def parse_c_file(filename, frames, frame_prototypes, frame_local_decls, global_decls):
         """!
         Parse a C file and return a list of functions, function prototypes and
@@ -205,7 +344,6 @@ def deinline(trace_filepath):
         @see https://pypi.python.org/pypi/clang
         @see https://pypi.python.org/pypi/pycparser
         """
-        FUNCTION_PARAMETERS_REGEXP = re.compile(r"\s*(?P<function_name>[^(]+)(?P<function_args>\(.*)")
         LOCAL_DECLARATION_REGEXP = re.compile(r"(?P<local_type>.*?)(?P<local_name>local_[^=]*)=(?P<local_value>.*);$")
         with open(filename, "r") as f:
 
@@ -259,74 +397,7 @@ def deinline(trace_filepath):
                         function_decls.append(line)
 
                     else:
-                        # Split into function and arguments
-                        # XXX This doesn't work for multiline
-                        # XXX This breaks switch indentation (case, break and instructions
-                        #     are set to the same indentation)
-                        m = FUNCTION_PARAMETERS_REGEXP.match(line)
-                        if (m is not None):
-                            function_name = m.group('function_name').strip()
-                            function_args_string = m.group('function_args').strip()
-
-                        if ((m is not None) and (function_name not in ['switch', 'if'])):
-                            assert None is logger.debug("Found function %s args %s call %s" %
-                                                        (function_name, function_args_string, repr(line)))
-
-                            function_args = []
-
-                            # Remove parenthesis/type casts
-                            # XXX We would still like to preserve
-                            #     (const void**) casts when invoking openAndGetAssetBuffer
-                            #     (void*) 0x0
-                            paren_nest_level = 0
-                            inside_quotes = False
-                            arg = ""
-                            for c in function_args_string:
-                                append_arg = False
-                                if ((c == '"') or inside_quotes):
-                                    arg = arg + c
-                                    if (c == '"'):
-                                        if (inside_quotes):
-                                            append_arg = True
-
-                                        inside_quotes = not inside_quotes
-
-                                elif (c == "("):
-                                    paren_nest_level += 1
-
-                                elif (c == ")"):
-                                    append_arg = (paren_nest_level == 1)
-                                    paren_nest_level -= 1
-
-                                elif (c == ","):
-                                    append_arg = True
-
-                                elif (c.isspace()):
-                                    pass
-
-                                elif (paren_nest_level == 1):
-                                    arg = arg + c
-
-                                if ((append_arg) and (arg != "")):
-                                    function_args.append(arg)
-                                    arg = ""
-
-                            # Set functions with no arguments to void to differentiate
-                            # from non-functions
-                            if (len(function_args) == 0):
-                                function_args = ["void"]
-
-                        else:
-                            assert None is logger.debug("Found assignment, comments... %s" % repr(line))
-                            # XXX This is passing comments as functions which will make
-                            #     harder to deinline
-
-                            # Pass non-function calls verbatim
-                            function_name = line
-                            # XXX This is a hack so we don't cause lack of sync between
-                            #     lists and lists of lists when a list of lists contains
-                            #     an empty list
-                            function_args = ["-"]
+                        function_name, function_args = parse_c_function_call(line)
 
                         frame.append([function_name] + function_args)
 
@@ -830,7 +901,6 @@ def deinline(trace_filepath):
 
                     # Check if this parameter's name matches a previous parameter
                     # in this substring occurrence
-                    actual_parameter_was_coalesced = False
                     for prev_param_index in actual_parameter_indices[0:param_index - 1 + 1]:
                         if (prev_param_index != -1):
                             is_coalesceable = False
@@ -1053,7 +1123,8 @@ def deinline(trace_filepath):
         frame_strings.append(this_frame_string)
         frame_actual_parameters.append(this_frame_actual_parameters)
 
-    logger.info("Initial code lines: %d" % sum([len(s) for s in frame_strings]))
+    initial_code_lines = sum([len(s) for s in frame_strings])
+    logger.info("Initial code lines: %d" % initial_code_lines)
 
     # Sliding window parameters
     # kipo-all 117405
@@ -1130,7 +1201,9 @@ def deinline(trace_filepath):
     # Print the new code
     lines = dump_code(frame_strings, frame_prototypes, frame_actual_parameters, frame_local_decls, global_decls)
 
-    logger.info("Final code lines: %d" % sum([len(s) for s in frame_strings]))
+    final_code_lines = sum([len(s) for s in frame_strings])
+    logger.info("Initial code lines %d final %d compression ratio %3.3f" % (
+        initial_code_lines, final_code_lines, float(initial_code_lines) / final_code_lines))
 
     return lines
 
