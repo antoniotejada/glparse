@@ -153,11 +153,13 @@ int openAndGetAssetBuffer(DrawState* pDrawState, const char* filename, AAsset** 
         if (ret != 0)
         {
             LOGE("Unable to getAssetBuffer %s, error %d", filename, ret);
+            exit(EXIT_FAILURE);
         }
     }
     else
     {
         LOGE("Unable to openAsset %s, error %d", filename, ret);
+        exit(EXIT_FAILURE);
     }
 
     LOGD("openAndGetAssetBuffer %p", *ppBuffer);
@@ -360,6 +362,7 @@ void glOverriddenEnable(DrawState* pDrawState, GLenum cap)
         break;
         default:
             LOGE("Unhandled overridden enable 0x%d", cap);
+            exit(EXIT_FAILURE);
         break;
     }
 }
@@ -376,6 +379,7 @@ void glOverriddenDisable(DrawState* pDrawState, GLenum cap)
         break;
         default:
             LOGE("Unhandled overridden disable 0x%d", cap);
+            exit(EXIT_FAILURE);
         break;
     }
 }

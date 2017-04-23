@@ -20,6 +20,7 @@ utilities
 """
 
 import errno
+import logging
 import os
 import pipes
 import scriptine
@@ -103,7 +104,7 @@ def trace_command(trace_filepath = "_out/com.amazon.tv.launcher.gltrace.gz",
             logger_handler = logging.StreamHandler()
             logger_handler.setFormatter(logging.Formatter(logging_format))
             logger.addHandler(logger_handler)
-            logger.setLevel(logging.DEBUG)
+            logger.setLevel(logging.INFO)
 
         gl_contexts_to_trace = trace_contexts
         if (gl_contexts_to_trace is not None):
@@ -118,6 +119,14 @@ def trace_command(trace_filepath = "_out/com.amazon.tv.launcher.gltrace.gz",
     if (deinline):
         scriptine.log.info("Deinlining the trace.inc file")
         if (not scriptine.misc.options.dry):
+
+            if (scriptine.log._level <= scriptine.log.L_DEBUG): # pragma: no cover
+                logger = logging.getLogger("deinline")
+                logging_format = "%(asctime).23s %(levelname)s:%(filename)s(%(lineno)d) [%(thread)d]: %(message)s"
+                logger_handler = logging.StreamHandler()
+                logger_handler.setFormatter(logging.Formatter(logging_format))
+                logger.addHandler(logger_handler)
+                logger.setLevel(logging.INFO)
 
             lines = deinliner.deinline(trace_incpath)
 

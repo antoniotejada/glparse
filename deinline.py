@@ -198,7 +198,6 @@ def deinline(trace_filepath):
             local_unsigned_int
             &param_AAssetManager_ptr
 
-        @todo check for "*" for completeness's sake (eg "*param_AAssetManager_ptr")
         @todo check for more complex indexing
         """
 
@@ -242,6 +241,14 @@ def deinline(trace_filepath):
             # Using address-of operator adds an extra indirection
             if (mangles[0].startswith("&")):
                 c_types.append("*")
+
+            # XXX This should also accept "*" for completeness, but note that
+            #     then you can have complex prefixes like *&ptr and the above
+            #     simple startswith needs changing
+
+            # Using content-of operator removes one indirection
+            if (mangles[0].startswith("*")):
+                c_types.remove("*")
 
             # Using index-of operator removes one indirection
             if (mangles[-1].endswith("]")):
@@ -869,19 +876,6 @@ def deinline(trace_filepath):
 
             # Coalesce all parameters that are the same as a previous one in
             # all the occurrences
-            # XXX Coalescing should be done in a pointer-aliasing aware way,
-            #     otherwise this bug pointer aliasing bug is not fixed
-            #       openAsset(pMgr, "filename", &pAsset)
-            #       getAssetBuffer(pAsset,
-            #     is deinlined as
-            #       void subframe(pMgr, &pAsset, param_AAsset_ptr, param_AAsset_ptr_ptr)
-            #           openAsset(pMgr, "filename", param_AAsset_ptr_ptr)
-            #           getAssetBuffer(param_AAsset_ptr
-            #     Note how getAssetBuffer calls using a temporary variable that is no
-            #     longer updated by the call to openAsset
-            #     This is currently fixed in the generator by unifying those calls
-            #     into a single openAndGetAssetBuffer
-
             for param_index in actual_parameter_indices:
                 if (param_index != -1):
 
@@ -1026,6 +1020,73 @@ def deinline(trace_filepath):
 
                     param_flat_index += 1
 
+
+        def coalesce_aliased_occurrences(all_actual_parameters,
+                                         best_substring_actual_parameters,
+                                         best_substring_formal_parameters):
+            """!
+            Coalesce in a pointer-aliasing aware way
+            This is necessary because eg in
+              openAndGetAssetBuffer(param_DrawState_ptr_0, "int_asset_24", &global_AAsset_ptr_I, &global_const_unsigned_int_ptr_I);
+              glTexImage2D(GL_TEXTURE_2D, 0, 6408, 16, 16, 0, GL_RGBA, GL_UNSIGNED_BYTE, global_const_unsigned_int_ptr_I);
+            which can be deinlined as
+              void subframe(p1, filename, ppAsset, ppI, pI)
+                 openAndGetAssetBuffer(..., ppI)
+                 glTexImage(...., pI)
+            Note how glTexImage2D calls using a temporary variable that is no longer
+            because the aliasing between *ppI and pI was lost when deinlining
+            """
+
+            def are_aliased(prev_param, param):
+                return ((prev_param == ("&" + param)) or
+                        (re.match(prev_param+ r"\[\d+\]", param) is not None))
+
+            # For every actual parameter, check if a previously occurrence aliases
+            # its contents, eg
+            #   f(&a)
+            #   h(a)
+            # In that case, we need to coalesce a into &a[0]
+            #   f(&a)
+            #   h(&a[0])
+            # XXX Note cases where deinlining code where there are aliased and non
+            #    aliased occurrences is not supported and will throw an exception
+            for actual_parameters in all_actual_parameters:
+                for actual_parameter_index, actual_parameter in enumerate(actual_parameters):
+                    for prev_actual_parameter_index, prev_actual_parameter in enumerate(actual_parameters[:actual_parameter_index]):
+                        # If this parameter was aliased in a previous instruction
+                        if (are_aliased(prev_actual_parameter, actual_parameter)):
+                            assert None is logger.debug("%s aliases to %s, " % (prev_actual_parameter, actual_parameter))
+
+                            # Coalesce the aliased parameter into the pointer
+                            for aliased_actual_parameters in all_actual_parameters:
+                                this_prev_actual_parameter = aliased_actual_parameters[prev_actual_parameter_index]
+                                this_actual_parameter = aliased_actual_parameters[actual_parameter_index]
+                                # We don't support a mix of aliased and non-aliased
+                                # occurrences, error out if so
+                                if (not are_aliased(this_prev_actual_parameter, this_actual_parameter)):
+                                    raise Exception("Unsupported mix of aliased and non-aliased occurrences, %s and %s vs. %s and %s" % (
+                                        prev_actual_parameter, actual_parameter,
+                                        this_prev_actual_parameter, this_actual_parameter
+                                    ))
+
+                                # Remove from the actual parameters, the callee
+                                # is changed below to use indirection on the
+                                # alias instead
+                                del aliased_actual_parameters[actual_parameter_index]
+
+                            formal_param_type, formal_param_name = best_substring_formal_parameters[actual_parameter_index].rsplit(" ", 1)
+                            prev_formal_param_type, prev_formal_param_name = best_substring_formal_parameters[prev_actual_parameter_index].rsplit(" ", 1)
+
+                            # Change all the occurrences in the new function body
+                            # to dereference the pointer
+                            for best_actual_parameters in best_substring_actual_parameters:
+                                for best_actual_parameter_index, best_actual_parameter in enumerate(best_actual_parameters):
+                                    if (best_actual_parameter == formal_param_name):
+                                        best_actual_parameters[best_actual_parameter_index] = prev_formal_param_name + "[0]"
+
+                            # Remove the formal parameter from the new function
+                            del best_substring_formal_parameters[actual_parameter_index]
+
         #
         # Remove each occurrence of the best substring from the function strings
         # by replacing it with a new function
@@ -1059,6 +1120,15 @@ def deinline(trace_filepath):
                                                    best_substring_formal_parameters)
 
         assert None is logger.debug("Formal and actual parameters for new function %s are: %s %s" %
+                                    (best_substring_function_name,
+                                     str(best_substring_formal_parameters),
+                                     str(best_substring_actual_parameters)))
+
+        # Finally coalesce all aliased parameters to prevent the aliasing bug
+        coalesce_aliased_occurrences(all_actual_parameters, best_substring_actual_parameters,
+                                     best_substring_formal_parameters)
+
+        assert None is logger.debug("Dealiased formal and actual parameters for new function %s are: %s %s" %
                                     (best_substring_function_name,
                                      str(best_substring_formal_parameters),
                                      str(best_substring_actual_parameters)))
@@ -1214,7 +1284,7 @@ if (__name__ == "__main__"): # pragma: no cover
     logger_handler.setFormatter(logging.Formatter(logging_format))
     logger.addHandler(logger_handler)
 
-    LOG_LEVEL = logging.INFO
+    LOG_LEVEL = logging.DEBUG
     logger.setLevel(LOG_LEVEL)
 
     trace_filepath = sys.argv[1]
