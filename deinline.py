@@ -30,20 +30,24 @@ dictionary, so any caveats (np-hard, use heuristics) and approaches used for
 dictionary compression can be used (suffix trees, gzip-like single-pass compression,
 etc).
 
+When deinlining, there's the possibility of a parameter aliasing issue, when a
+deinlined block contains both a pointer written to by reference and that same
+pointer being used dereferenced afterwards.
+In that case the pointer will be passed as two different parameters, a pointer
+to pointer (for the reference) and a plain pointer.
+Because the plain pointer now lives in the stack, the pointer won't be modified
+by the pointer to pointer, hence the issue.
+This is dealt with by coalescing the pointer into the pointer to pointer parameter,
+or introducing a copy from one to the other when the coalescing cannot be done
+because the deinlined code is invoked from callers that require dealiasing and
+callers that don't require it.
+
 Limitations:
 - The C parser reading the source file is very simple and whatever doesn't understand
   (variable declarations, assignments, etc) is seen as a function name, so will
   make deinlining harder.
 - To ease deinlining, convert assignments into functions and instead of return
   values, use variables passed by reference.
-- To workaround aliasing issues, convert sequences of pointer to pointer variable
-  and that same pointer variable to single function calls.
-  There's a parameter aliasing bug when a deinlined block contains both a pointer
-  written to by reference and that same pointer being used directly afterwards,
-  in that case the pointer will be passed as two different parameters, a pointer
-  to pointer (for the reference) and a plain pointer.
-  Because the plain pointer now lives in the stack, the pointer won't be modified
-  by the pointer to pointer, hence the bug.
 
 Todo/Improvements:
 - More matching can be done if conditionals are introduced, so divergent code is
@@ -59,18 +63,32 @@ Todo/Improvements:
 """
 
 import array
+import copy
 import logging
 import operator
 import re
 import string
 import sys
 
+class Struct(dict):
+    """!
+    Use with
+
+    struct = Struct(field1='foo', field2='bar', field3=42)
+
+    self.assertEquals('bar', struct.field2)
+    self.assertEquals(42, struct['field3'])
+
+    """
+    def __init__(self, **kwargs):
+        super(Struct, self).__init__(**kwargs)
+        self.__dict__ = self
+
 logger = logging.getLogger(__name__)
 
 # The code is an array of arrays of strings, the first argument of each line is
 # the function name, subsequent items are the arguments
-# XXX Missing passing window size, increment
-def deinline(trace_filepath):
+def deinline(trace_filepath, window_size = 2, window_start_increment=1):
 
     ## FUNCTION_PARAMETERS_REGEXP = re.compile(r"\s*(?P<function_name>[^(]+)\((?P<function_args>.*)\)")
     FUNCTION_PARAMETERS_REGEXP = re.compile(r"\s*(?P<function_name>[^(]+)(?P<function_args>\(.*)")
@@ -210,7 +228,8 @@ def deinline(trace_filepath):
             elif (mangled_name[0] == "'"):
                 c_type = "char"
             elif (mangled_name.startswith("GL_")):
-                # XXX Should this trap other enums like EXIT_SUCCESS?
+                # XXX Should this trap other enums like EXIT_SUCCESS, NULL, true,
+                #     false?
                 c_type = "GLenum"
             else:
                 try:
@@ -355,6 +374,7 @@ def deinline(trace_filepath):
         with open(filename, "r") as f:
 
             brace_nest_level = 0
+
             for line in f:
 
                 # Ignore first-level braces and tag function end if needed
@@ -719,6 +739,7 @@ def deinline(trace_filepath):
                                                                     frame_actual_parameters,
                                                                     substring,
                                                                     all_actual_parameters,
+                                                                    unflattened_all_actual_parameters,
                                                                     best_substring_parameters,
                                                                     best_substring_function_char):
 
@@ -779,6 +800,7 @@ def deinline(trace_filepath):
                         # to the substring's new function
 
                         this_best_substring_parameters = old_frame_actual_parameters[i:best_substring_len+i]
+                        unflattened_all_actual_parameters.append(copy.deepcopy(this_best_substring_parameters))
                         # Flatten all the actual parameters into a single dimension
                         # list
                         actual_parameters = [param for params in this_best_substring_parameters for param in params]
@@ -791,21 +813,21 @@ def deinline(trace_filepath):
                             # occurrences, it's enough with setting this to the first
                             # occurrence found, common parameters will be properly
                             # removed later
-                            # XXX There's an innocuous corner case that causes
-                            #     the trace to be different depending on which
-                            #     substring occurrence is used: when the occurrences
-                            #     contain invocations to functions taking void*
-                            #     parameters, it can happen that the substring
-                            #     is invoked with an int* in one occurrence and
-                            #     with a char* in another.
-                            #     This happens with glVertexAttribPointerData,
-                            #     glVertexAttribPointer,....
-                            #     It's not clear if this should be fixed in the
-                            #     code generator so it does a casting to void*,
-                            #     or here so it assumes that multiple types
-                            #     mean void*
-                            #     This issue is minor because it just causes a
-                            #     compiler warning because of mixing pointer types.
+                            # There's an innocuous corner case that causes
+                            # the trace to be different depending on which
+                            # substring occurrence is used: when the occurrences
+                            # contain invocations to functions taking void*
+                            # parameters, it can happen that the substring
+                            # is invoked with an int* in one occurrence and
+                            # with a char* in another.
+                            # This happens with glVertexAttribPointerData,
+                            # glVertexAttribPointer,....
+                            # This could be fixed here so multiple types mean
+                            # void*, but it's currently fixed later by adding
+                            # castings whenever the formal parameter types and
+                            # the actual parameter types mismatch.
+                            # Adding castings prevents compiler errors when treating
+                            # mixed pointer type warnings as errors.
                             best_substring_parameters.extend(this_best_substring_parameters)
 
                         new_frame_actual_parameters.append(actual_parameters)
@@ -898,7 +920,7 @@ def deinline(trace_filepath):
                     for prev_param_index in actual_parameter_indices[0:param_index - 1 + 1]:
                         if (prev_param_index != -1):
                             is_coalesceable = False
-                            logger.debug("Coalesce testing %s vs %s" %
+                            assert None is logger.debug("Coalesce testing %s vs %s" %
                                                  (all_actual_parameters[0][param_index],
                                                   all_actual_parameters[0][prev_param_index])
                                                  )
@@ -907,7 +929,7 @@ def deinline(trace_filepath):
                                 # Check if the same parameter indices also match in
                                 # all the other substring occurrences
                                 for actual_parameters in all_actual_parameters[1:]:
-                                    logger.debug("Coalesce testing %s vs %s" %
+                                    assert None is logger.debug("Coalesce testing %s vs %s" %
                                                  (actual_parameters[param_index],
                                                   actual_parameters[prev_param_index])
                                                  )
@@ -1020,72 +1042,270 @@ def deinline(trace_filepath):
 
                     param_flat_index += 1
 
-
-        def coalesce_aliased_occurrences(all_actual_parameters,
-                                         best_substring_actual_parameters,
-                                         best_substring_formal_parameters):
+        def gather_per_aliasing_instruction_information(per_instruction_aliased_parameters,
+                                                        unflattened_all_actual_parameters):
             """!
-            Coalesce in a pointer-aliasing aware way
-            This is necessary because eg in
-              openAndGetAssetBuffer(param_DrawState_ptr_0, "int_asset_24", &global_AAsset_ptr_I, &global_const_unsigned_int_ptr_I);
-              glTexImage2D(GL_TEXTURE_2D, 0, 6408, 16, 16, 0, GL_RGBA, GL_UNSIGNED_BYTE, global_const_unsigned_int_ptr_I);
-            which can be deinlined as
-              void subframe(p1, filename, ppAsset, ppI, pI)
-                 openAndGetAssetBuffer(..., ppI)
-                 glTexImage(...., pI)
-            Note how glTexImage2D calls using a temporary variable that is no longer
-            because the aliasing between *ppI and pI was lost when deinlining
+            Calculate information for each aliasing instruction.
+
+            Returns a list with the instructions the i-th instruction aliases.
+            Each element of the list is a dict. The dict will be empty if the
+            instruction doesn't alias any other instruction.
+            The dict contains a Struct with the fields speicfying the aliasing
+            - index of the aliasing parameter
+            - index of aliased parameter
+            - indices of the callers that alias (not all the callers may alias)
+
+            @param[out] per_instruction_aliased_parameters: list of dicts.
+                        There's one entry in the list per instruction in the substring.
+                        The entry is a dict with information about the aliasing
+            """
+            per_instruction_aliased_parameters.extend([{} for _ in xrange(len(unflattened_all_actual_parameters[0]))])
+            # Find the variables being aliased
+            # For each occurrence
+            for substring_actual_params_index, substring_actual_params in enumerate(unflattened_all_actual_parameters):
+
+                # For each instruction in the occurrence
+                for instruction_actual_params_index, instruction_actual_params in enumerate(substring_actual_params):
+                    # Check if parameters in this instruction are being aliased by
+                    # parameters in a previous instruction
+                    # XXX This is n^2, should hash the parameters walking the
+                    #     instructions once and then query the hash using the
+                    #     root of the parameter name
+                    for param_index, param in enumerate(instruction_actual_params):
+                        alias_found = False
+                        # For each previous instruction, search backwards for the
+                        # first instruction that aliases this one (if any)
+                        for prev_instruction_actual_params_index in reversed(xrange(instruction_actual_params_index)):
+                            prev_instruction_actual_params = substring_actual_params[prev_instruction_actual_params_index]
+                            prev_instruction_aliased_parameters = per_instruction_aliased_parameters[prev_instruction_actual_params_index]
+                            # for each parameter of a previous instruction
+                            for prev_param_index, prev_param in enumerate(prev_instruction_actual_params):
+
+                                # Check if prev_param aliases param
+                                if ((prev_param == ("&" + param)) or
+                                    (re.match(prev_param + r"\[\d+\]", param) is not None)):
+
+                                    # The previous instruction aliases this instruction
+                                    s = Struct(aliasing_param_index = prev_param_index,
+                                               aliased_param_index = param_index,
+                                               aliasing_occurrence_indices = set())
+                                    s = prev_instruction_aliased_parameters.get(instruction_actual_params_index, s)
+                                    # One instruction can alias multiple instructions,
+                                    # but only a single parameter can be aliased for
+                                    # a given aliased instruction
+                                    assert(s.aliased_param_index == param_index)
+                                    # Record what parameter the previous instruction
+                                    # aliases from this instruction
+                                    s.aliasing_occurrence_indices.add(substring_actual_params_index)
+                                    prev_instruction_aliased_parameters[instruction_actual_params_index] = s
+                                    alias_found = True
+                                    break
+
+                            if (alias_found):
+                                break
+
+        def resolve_aliasings(substring,
+                              best_substring_actual_parameters,
+                              best_substring_formal_parameters,
+                              per_instruction_aliased_parameters,
+                              all_actual_parameters,
+                              unflattened_all_actual_parameters):
+            """!
+
+            @return *string* substring with all aliased instructions resolved either
+                             by adding copies, already-existing global coalescing
+                             or aliased variable coalesced into pointer dereference
+
+             Variable aliasing happens when a variable is passed by reference
+             to a function and then the variable's value used afterwards, eg
+               glGenTextures(1, &id)
+               glBindTexture(GL_TEXTURE_2D, id)
+             When that code is refactored, two different parameters are used
+             in the refactoring:
+               glGenTextures(param_int_ptr)
+               glBindTexture(GL_TEXTURE_2D, param_int)
+             This causes the aliasing between &id and id to be lost and param_int
+             is not updated with
+
+             Note that the refactored code may have multiple occurrences of the aliased
+             variable and even multiple aliasings
+               glGenTextures(1, &id)
+               glBindTexture(GL_TEXTURE_2D, id)
+               ...
+               glBindTexture(GL_TEXTURE_2D, id)
+               ...
+               glGenTextures(1, &id)
+               glBindTexture(GL_TEXTURE_2D, id)
+
+             Also, it can happen that some callers may require aliasing, while some
+             others may not, eg
+                          CALLER 1                         CALLER 2
+             glGenTextures(1, &id)             |   glGenTextures(1, &id2)
+             glBindTexture(GL_TEXTURE_2D, id)  |   glBindTexture(GL_TEXTURE_2D, 0)
+
+             or that the aliasing affects different instructions
+                          CALLER 1                         CALLER 2
+             glGenTextures(1, &id)             |   glGenTextures(1, &id2)
+             glBindTexture(GL_TEXTURE_2D, 0)   |   glBindTexture(GL_TEXTURE_2D, id2)
+             glBindTexture(GL_TEXTURE_2D, id)  |   glBindTexture(GL_TEXTURE_2D, 0)
+
+             glGenTextures(1, param_int_ptr_0)
+             memcpy(&param_int_1, param_int_ptr_0[0], param_int_3)
+             memcpy(&param_int_2, param_int_ptr_0[0], param_int_4)
+             glBindTexture(GL_TEXTURE_2D, param_int_1)
+             glBindTexture(GL_TEXTURE_2D, param_int_2)
+
+             or that the aliasing originates in different instructions
+                          CALLER 1                         CALLER 2
+             glGenTextures(1, &id)              |   glGenTextures(1, &id2)
+             glGenTextures(1, &id1)             |   glGenTextures(1, &id3)
+             glBindTexture(GL_TEXTURE_2D, id)   |   glBindTexture(GL_TEXTURE_2D, id2)
+
+             glGenTextures(1, param_int_ptr_0)
+             memcpy(&param_int_2, param_int_ptr_0[0], param_int_4)
+             glGenTextures(1, param_int_ptr_1)
+             memcpy(&param_int_2, param_int_ptr_1[0], param_int_5)
+             glBindTexture(GL_TEXTURE_2D, param_int_3)
+
+             In addition, there could be multiple parameters aliasing or aliased
+             in a single instruction, but those cases are not considered since
+             they are not generated
+
+             A generic way of solving this is to
+             1. Pass an extra boolean parameter per aliased variable and occurrence
+                that informs if the caller requires aliasing or not
+             2. Add an instruction that performs the aliasing if necessary
+                fn(param_int_ptr, param_int, param_int_1, param_int_2)
+                    glGenTextures(1, param_int_ptr)
+                    memcpy(&param_int, param_int_ptr[0], param_int_1)
+                    glBindTexture(GL_TEXTURE_2D, param_int)
+                    ...
+                    glBindTexture(GL_TEXTURE_2D, param_int)
+                    ...
+                    glGenTextures(1, param_int_ptr)
+                    memcpy(&param_int, param_int_ptr[0], param_int_2)
+                    glBindTexture(GL_TEXTURE_2D, param_int)
+
+             Another possible solution is to break the function into aliased and non-aliased
+             versions. The problem is that this causes combinatorial explosion if
+             multiple aliased variables occur inside the function.
+
+             In the general case this can be solved by passing an extra parameter
+             per occurrence
+
+             Besides the general case, several optimizations can be used, depending
+             on the case
+             1. Pure aliasing (all callers need to alias param_int_ptr to param_int)
+                   glGenTextures(param_int_ptr)
+                   glTexImage(param_int)
+                Accesses to param_int can be coalesced into accesses to *param_int_ptr
+                Only param_int_ptr needs to be passed to the function
+                   glGenTextures(param_int_ptr)
+                   glGenTextures(param_int_ptr[0])
+             2. Aliasing with global variables don't need that can be coalesced
+                Nothing to do other than coalescing
+             3. Aliasing and non-aliasing across functions
+                This requires an extra parameter per aliased variable, the aliased
+                variable
+             4. Aliasing and non-aliasing inside the same function
+                This requires extra parameters per occurrence of the aliased variable
+                so the caller can inform if it has to be copied or not
+
             """
 
-            def are_aliased(prev_param, param):
-                return ((prev_param == ("&" + param)) or
-                        (re.match(prev_param+ r"\[\d+\]", param) is not None))
+            # Insert copy instructions for all aliased parameters, starting
+            # by the end to keep indices valid
+            # Note this causes formal parameters to be used in reversed order (they
+            # are still declared in the right order), but it's innocuous
 
-            # For every actual parameter, check if a previously occurrence aliases
-            # its contents, eg
-            #   f(&a)
-            #   h(a)
-            # In that case, we need to coalesce a into &a[0]
-            #   f(&a)
-            #   h(&a[0])
-            # XXX Note cases where deinlining code where there are aliased and non
-            #    aliased occurrences is not supported and will throw an exception
-            for actual_parameters in all_actual_parameters:
-                for actual_parameter_index, actual_parameter in enumerate(actual_parameters):
-                    for prev_actual_parameter_index, prev_actual_parameter in enumerate(actual_parameters[:actual_parameter_index]):
-                        # If this parameter was aliased in a previous instruction
-                        if (are_aliased(prev_actual_parameter, actual_parameter)):
-                            assert None is logger.debug("%s aliases to %s, " % (prev_actual_parameter, actual_parameter))
+            # Early exit if we don't have aliasing information
+            if (sum([len(d) for d in per_instruction_aliased_parameters]) == 0):
+                return substring
 
-                            # Coalesce the aliased parameter into the pointer
-                            for aliased_actual_parameters in all_actual_parameters:
-                                this_prev_actual_parameter = aliased_actual_parameters[prev_actual_parameter_index]
-                                this_actual_parameter = aliased_actual_parameters[actual_parameter_index]
-                                # We don't support a mix of aliased and non-aliased
-                                # occurrences, error out if so
-                                if (not are_aliased(this_prev_actual_parameter, this_actual_parameter)):
-                                    raise Exception("Unsupported mix of aliased and non-aliased occurrences, %s and %s vs. %s and %s" % (
-                                        prev_actual_parameter, actual_parameter,
-                                        this_prev_actual_parameter, this_actual_parameter
-                                    ))
+            # Copy so indices into this list remain valid through the loop below
+            best_substring_actual_parameters_copy = list(best_substring_actual_parameters)
+            removable_formal_parameter_names = set()
+            nonremovable_formal_parameter_names = set()
+            for aliasing_instruction_index in reversed(xrange(len(per_instruction_aliased_parameters))):
+                aliased_instruction_indices = per_instruction_aliased_parameters[aliasing_instruction_index]
+                resolved_aliasings = set()
 
-                                # Remove from the actual parameters, the callee
-                                # is changed below to use indirection on the
-                                # alias instead
-                                del aliased_actual_parameters[actual_parameter_index]
+                for aliased_instruction_index in aliased_instruction_indices:
+                    # Insert the copy instruction after the aliasing instruction
+                    s = aliased_instruction_indices[aliased_instruction_index]
+                    aliased_parameter_name = best_substring_actual_parameters_copy[aliased_instruction_index][s.aliased_param_index]
+                    aliasing_parameter_name = best_substring_actual_parameters_copy[aliasing_instruction_index][s.aliasing_param_index]
 
-                            formal_param_type, formal_param_name = best_substring_formal_parameters[actual_parameter_index].rsplit(" ", 1)
-                            prev_formal_param_type, prev_formal_param_name = best_substring_formal_parameters[prev_actual_parameter_index].rsplit(" ", 1)
+                    # No need to do aliasing resolution on parameters coalesced
+                    # to a global variable
+                    if (re.match(".?global_", aliased_parameter_name) is not None):
+                        assert (re.match(".?global_", aliasing_parameter_name))
+                        continue
 
-                            # Change all the occurrences in the new function body
-                            # to dereference the pointer
-                            for best_actual_parameters in best_substring_actual_parameters:
-                                for best_actual_parameter_index, best_actual_parameter in enumerate(best_actual_parameters):
-                                    if (best_actual_parameter == formal_param_name):
-                                        best_actual_parameters[best_actual_parameter_index] = prev_formal_param_name + "[0]"
+                    # If all the callers alias, we can coalesce the aliased access
+                    # into a pointer dereference, otherwise generate a copy instruction
+                    if (len(s.aliasing_occurrence_indices) == len(unflattened_all_actual_parameters)):
 
-                            # Remove the formal parameter from the new function
-                            del best_substring_formal_parameters[actual_parameter_index]
+                        # Coalesce into pointer dereference
+                        best_substring_actual_parameters[aliased_instruction_index
+                            ][s.aliased_param_index] = aliasing_parameter_name + "[0]"
+
+                        # The coalesced parameter is a candidate to be removed
+                        # if it's not used elsewhere
+                        removable_formal_parameter_names.add(aliased_parameter_name)
+
+                    else:
+
+                        # If the aliased parameter has already been memcpy'd
+                        # no need to do it again
+                        # This can happen because, at the time the aliasing
+                        # information is gathered, it's not known if it's mixed
+                        # aliasing/non-aliasing, or some aliasing that can be resolved
+                        # via pointer / global coalescing, so an aliasing instruction
+                        # can be inserted several times when the aliased parameter
+                        # is used in different aliased instructions
+                        if (aliased_parameter_name in resolved_aliasings):
+                            continue
+
+                        substring = substring[0:aliasing_instruction_index + 1] + function_to_char["memcpy"] + substring[aliasing_instruction_index+1:]
+                        new_parameter_name = "param_int_%d" % len(best_substring_formal_parameters)
+                        best_substring_formal_parameters.append("int %s" % new_parameter_name)
+
+                        # Add the parameters to the memcpy invocation
+                        best_substring_actual_parameters.insert(aliasing_instruction_index + 1,
+                            ["&" + best_substring_actual_parameters_copy[aliased_instruction_index][s.aliased_param_index],
+                             best_substring_actual_parameters_copy[aliasing_instruction_index][s.aliasing_param_index],
+                             new_parameter_name])
+
+                        # Add new parameters to each call site of the substring
+                        for substring_actual_params_index, substring_actual_params in enumerate(unflattened_all_actual_parameters):
+                            if (substring_actual_params_index in s.aliasing_occurrence_indices):
+                                # XXX This assumes all aliased types are 4-bytes
+                                value = 4
+                            else:
+                                value = 0
+                            all_actual_parameters[substring_actual_params_index].append("%d" % value)
+
+                        resolved_aliasings.add(aliased_parameter_name)
+
+                        # This parameter cannot be removed since it's used
+                        nonremovable_formal_parameter_names.add(aliased_parameter_name)
+
+            # Remove all removable formal parameter
+            removable_formal_parameter_names -= nonremovable_formal_parameter_names
+            if (len(removable_formal_parameter_names) > 0):
+                best_substring_formal_parameter_names = [type_name.split()[-1] for type_name in best_substring_formal_parameters]
+                for formal_parameter_name in removable_formal_parameter_names:
+                    # Find the index of the formal parameter
+                    formal_parameter_index = best_substring_formal_parameter_names.index(formal_parameter_name)
+                    del best_substring_formal_parameters[formal_parameter_index]
+                    del best_substring_formal_parameter_names[formal_parameter_index]
+
+                    # Delete the actual parameter from the call sites
+                    for actual_parameters in all_actual_parameters:
+                        del actual_parameters[formal_parameter_index]
+
+            return substring
 
         #
         # Remove each occurrence of the best substring from the function strings
@@ -1098,6 +1318,7 @@ def deinline(trace_filepath):
 
         # List of references to items in frame_actual_parameters
         all_actual_parameters = []
+        unflattened_all_actual_parameters = []
         # List of flattened actual parameters that are common across call-sites
         # with None for entries that are not common
         actual_parameter_indices = []
@@ -1107,8 +1328,16 @@ def deinline(trace_filepath):
                                                                 frame_actual_parameters,
                                                                 substring,
                                                                 all_actual_parameters,
+                                                                unflattened_all_actual_parameters,
                                                                 best_substring_actual_parameters,
                                                                 best_substring_function_char)
+
+
+        # Information about what instructions and parameters this instruction aliases
+        # Note that one instruction can alias multiple later instructions
+        per_instruction_aliased_parameters = []
+        gather_per_aliasing_instruction_information(per_instruction_aliased_parameters,
+                                                    unflattened_all_actual_parameters)
 
         # Note all_actual_parameters is a list of references to items in
         # frame_actual_parameters, so modifying the first updates the second too
@@ -1124,9 +1353,12 @@ def deinline(trace_filepath):
                                      str(best_substring_formal_parameters),
                                      str(best_substring_actual_parameters)))
 
-        # Finally coalesce all aliased parameters to prevent the aliasing bug
-        coalesce_aliased_occurrences(all_actual_parameters, best_substring_actual_parameters,
-                                     best_substring_formal_parameters)
+        substring = resolve_aliasings(substring,
+                                      best_substring_actual_parameters,
+                                      best_substring_formal_parameters,
+                                      per_instruction_aliased_parameters,
+                                      all_actual_parameters,
+                                      unflattened_all_actual_parameters)
 
         assert None is logger.debug("Dealiased formal and actual parameters for new function %s are: %s %s" %
                                     (best_substring_function_name,
@@ -1196,6 +1428,15 @@ def deinline(trace_filepath):
     initial_code_lines = sum([len(s) for s in frame_strings])
     logger.info("Initial code lines: %d" % initial_code_lines)
 
+    # Add any predefined functions
+    # memcpy is a function that will get called whenever there's parameter
+    # aliasing that can't be resolved by global parameter coalescing
+    # or pointer parameter coalescing
+    for function_name in ["memcpy"]:
+        function_char = unichr(len(function_to_char))
+        function_to_char[function_name] = function_char
+        char_to_function[function_char] = function_name
+
     # Sliding window parameters
     # kipo-all 117405
     # size=2, start=0, start_increment=5, size_increment=10 9463 1m4s
@@ -1205,9 +1446,7 @@ def deinline(trace_filepath):
     # gtavc 1252989
     # size=2, start=0, start_increment=1, size_increment=0 57955 3.95m
     # size=4, start=0, start_increment=1, size_increment=0 45542 4.46m
-    window_size = 2
     window_start = 0
-    window_start_increment = 1
     window_size_increment = 0
 
     # XXX Should this 1000 iterations be a parameter?
@@ -1268,7 +1507,8 @@ def deinline(trace_filepath):
         logger.debug("Converting best substring into a new function")
         replace_code(frame_strings, frame_prototypes, best_substring_and_count[0])
 
-    # Print the new code
+        ## print string.join(dump_code(frame_strings, frame_prototypes, frame_actual_parameters, frame_local_decls, global_decls), "\n")
+
     lines = dump_code(frame_strings, frame_prototypes, frame_actual_parameters, frame_local_decls, global_decls)
 
     final_code_lines = sum([len(s) for s in frame_strings])
@@ -1284,12 +1524,17 @@ if (__name__ == "__main__"): # pragma: no cover
     logger_handler.setFormatter(logging.Formatter(logging_format))
     logger.addHandler(logger_handler)
 
-    LOG_LEVEL = logging.DEBUG
+    LOG_LEVEL = logging.INFO
     logger.setLevel(LOG_LEVEL)
 
-    trace_filepath = sys.argv[1]
+    ## trace_filepath = sys.argv[1]
+    ## window_size = int(sys.argv[2])
+    ## trace_filepath = r"tests\deinline\params_bug_aliasing.c"
+    trace_filepath = r"c:\Users\atejada\Documents\works\python\glparse\_out\sonicdash_stage1\trace.inc"
+    ## window_size = 50
+    window_size = 2
 
-    lines = deinline(trace_filepath)
+    lines = deinline(trace_filepath, window_size)
 
     for line in lines:
         print line
