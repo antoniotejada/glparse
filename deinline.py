@@ -63,7 +63,6 @@ Todo/Improvements:
 """
 
 import array
-import copy
 import logging
 import operator
 import re
@@ -93,6 +92,7 @@ def deinline(trace_filepath, window_size = 2, window_start_increment=1):
     ## FUNCTION_PARAMETERS_REGEXP = re.compile(r"\s*(?P<function_name>[^(]+)\((?P<function_args>.*)\)")
     FUNCTION_PARAMETERS_REGEXP = re.compile(r"\s*(?P<function_name>[^(]+)(?P<function_args>\(.*)")
     FUNCTION_PROTOTYPE_REGEXP = re.compile(r"\s*(?P<function_name_and_return_type>[^(]+)\((?P<function_arg_type_and_names>.*)\)")
+    VARIABLE_REGEXP = re.compile(r"(.)?((global_|local_|param_)[^[]*)(\[\d+\])?")
 
     def dump_code(frame_strings, frame_prototypes, frame_actual_parameters, frame_local_decls, global_decls):
         lines = []
@@ -220,7 +220,7 @@ def deinline(trace_filepath, window_size = 2, window_start_increment=1):
         """
 
         # See if this is a mangled variable name or a literal
-        if (re.match(r"(.?global_|.?local_|.?param_).*", mangled_name) is None):
+        if (VARIABLE_REGEXP.match(mangled_name) is None):
             # If it doesn't match a mangled variable name, it has to be a literal
             # (integer, float, enum or string)
             if (mangled_name[0] == '"'):
@@ -800,7 +800,12 @@ def deinline(trace_filepath, window_size = 2, window_start_increment=1):
                         # to the substring's new function
 
                         this_best_substring_parameters = old_frame_actual_parameters[i:best_substring_len+i]
-                        unflattened_all_actual_parameters.append(copy.deepcopy(this_best_substring_parameters))
+                        # Deep copy is needed to avoid non-atomicity later when
+                        # this_best_substring_parameters is modified but we want
+                        # to preserve unflattened_all_actual_parameters
+                        # (not using copy.deepcopy saves 3% since we know this is
+                        # a depth 2 list)
+                        unflattened_all_actual_parameters.append([[param for param in params] for params in this_best_substring_parameters])
                         # Flatten all the actual parameters into a single dimension
                         # list
                         actual_parameters = [param for params in this_best_substring_parameters for param in params]
@@ -1050,7 +1055,7 @@ def deinline(trace_filepath, window_size = 2, window_start_increment=1):
             Returns a list with the instructions the i-th instruction aliases.
             Each element of the list is a dict. The dict will be empty if the
             instruction doesn't alias any other instruction.
-            The dict contains a Struct with the fields speicfying the aliasing
+            The dict contains a Struct with the fields specifying the aliasing
             - index of the aliasing parameter
             - index of aliased parameter
             - indices of the callers that alias (not all the callers may alias)
@@ -1063,45 +1068,83 @@ def deinline(trace_filepath, window_size = 2, window_start_increment=1):
             # Find the variables being aliased
             # For each occurrence
             for substring_actual_params_index, substring_actual_params in enumerate(unflattened_all_actual_parameters):
+                param_to_parsed_varname = {}
+
+                # Hash from varname to list of fullnames and the instruction they appear in
+                # Note this may not be a variable (literal number, string,
+                # etc), in which case it cannot be aliased and can be ignored
+                varnames_params = {}
 
                 # For each instruction in the occurrence
                 for instruction_actual_params_index, instruction_actual_params in enumerate(substring_actual_params):
-                    # Check if parameters in this instruction are being aliased by
-                    # parameters in a previous instruction
-                    # XXX This is n^2, should hash the parameters walking the
-                    #     instructions once and then query the hash using the
-                    #     root of the parameter name
+                    # For each parameter in this instruction
                     for param_index, param in enumerate(instruction_actual_params):
-                        alias_found = False
-                        # For each previous instruction, search backwards for the
-                        # first instruction that aliases this one (if any)
-                        for prev_instruction_actual_params_index in reversed(xrange(instruction_actual_params_index)):
-                            prev_instruction_actual_params = substring_actual_params[prev_instruction_actual_params_index]
-                            prev_instruction_aliased_parameters = per_instruction_aliased_parameters[prev_instruction_actual_params_index]
-                            # for each parameter of a previous instruction
-                            for prev_param_index, prev_param in enumerate(prev_instruction_actual_params):
 
-                                # Check if prev_param aliases param
-                                if ((prev_param == ("&" + param)) or
-                                    (re.match(prev_param + r"\[\d+\]", param) is not None)):
+                        parsed_varname = param_to_parsed_varname.get(param, None)
 
-                                    # The previous instruction aliases this instruction
-                                    s = Struct(aliasing_param_index = prev_param_index,
-                                               aliased_param_index = param_index,
-                                               aliasing_occurrence_indices = set())
-                                    s = prev_instruction_aliased_parameters.get(instruction_actual_params_index, s)
-                                    # One instruction can alias multiple instructions,
-                                    # but only a single parameter can be aliased for
-                                    # a given aliased instruction
-                                    assert(s.aliased_param_index == param_index)
-                                    # Record what parameter the previous instruction
-                                    # aliases from this instruction
-                                    s.aliasing_occurrence_indices.add(substring_actual_params_index)
-                                    prev_instruction_aliased_parameters[instruction_actual_params_index] = s
-                                    alias_found = True
-                                    break
+                        if (parsed_varname is None):
+                            m = VARIABLE_REGEXP.match(param)
+                            if (m is None):
+                                # XXX This could insert non variables
+                                #     in the hash for speed?
+                                continue
+                            varname = m.group(2)
+                            ref = m.group(1)
+                            deref = m.group(4)
+                            parsed_varname = Struct(is_deref = deref is not None,
+                                                    is_ref   = ref is not None,
+                                                    varname  = varname)
+                            param_to_parsed_varname[param] = parsed_varname
 
-                            if (alias_found):
+                        # Store the information about this variable
+                        varname_params = varnames_params.get(parsed_varname.varname, [])
+                        # XXX Do sorted insert by instruction index?
+                        # XXX Is there some benefit because of doing this
+                        #     in increasing or decreasing instruction order?
+                        varname_params.append(Struct(is_deref = parsed_varname.is_deref,
+                                                     is_ref = parsed_varname.is_ref,
+                                                     param_index = param_index,
+                                                     param = param,
+                                                     instruction_index = instruction_actual_params_index))
+                        varnames_params[parsed_varname.varname] = varname_params
+
+                # For each varname
+                for varname, varname_params in varnames_params.iteritems():
+                    varname_params = sorted(varname_params,
+                                            key = lambda x: x.instruction_index,
+                                            reverse =True)
+
+                    for varname_param_index, varname_param in enumerate(varname_params):
+                        # For each varname in a different instruction
+                        for prev_varname_param in varname_params[varname_param_index+1:]:
+                            assert(prev_varname_param.instruction_index <= varname_param.instruction_index)
+                            # Aliasing can only be between this and a strictcly previous
+                            # instruction
+                            if (prev_varname_param.instruction_index == varname_param.instruction_index):
+                                continue
+                            # XXX What about the other is_ref/is_deref cases?
+                            if ((prev_varname_param.is_ref and not varname_param.is_ref) or
+                                (not prev_varname_param.is_deref and varname_param.is_deref)):
+                                assert None is logger.debug("%s at %d aliases %s at %d" %
+                                                            (prev_varname_param.param,
+                                                             prev_varname_param.instruction_index,
+                                                            varname_param.param,
+                                                             varname_param.instruction_index))
+                                # prev_varname aliases varname
+                                # The previous instruction aliases this instruction
+                                s = Struct(aliasing_param_index = prev_varname_param.param_index,
+                                           aliased_param_index = varname_param.param_index,
+                                           aliasing_occurrence_indices = set())
+                                prev_instruction_aliased_parameters = per_instruction_aliased_parameters[prev_varname_param.instruction_index]
+                                s = prev_instruction_aliased_parameters.get(varname_param.instruction_index, s)
+                                # One instruction can alias multiple instructions,
+                                # but only a single parameter can be aliased for
+                                # a given aliased instruction
+                                assert(s.aliased_param_index == varname_param.param_index)
+                                # Record what parameter the previous instruction
+                                # aliases from this instruction
+                                s.aliasing_occurrence_indices.add(substring_actual_params_index)
+                                prev_instruction_aliased_parameters[varname_param.instruction_index] = s
                                 break
 
         def resolve_aliasings(substring,
@@ -1449,8 +1492,11 @@ def deinline(trace_filepath, window_size = 2, window_start_increment=1):
     window_start = 0
     window_size_increment = 0
 
+    iterations = 1000
+    ## iterations = 500
+
     # XXX Should this 1000 iterations be a parameter?
-    for k in xrange(1000):
+    for k in xrange(iterations):
 
         # Find the number of occurrences of each possible substring
 
@@ -1527,12 +1573,12 @@ if (__name__ == "__main__"): # pragma: no cover
     LOG_LEVEL = logging.INFO
     logger.setLevel(LOG_LEVEL)
 
-    ## trace_filepath = sys.argv[1]
-    ## window_size = int(sys.argv[2])
+    trace_filepath = sys.argv[1]
+    window_size = int(sys.argv[2])
     ## trace_filepath = r"tests\deinline\params_bug_aliasing.c"
-    trace_filepath = r"c:\Users\atejada\Documents\works\python\glparse\_out\sonicdash_stage1\trace.inc"
+    ## trace_filepath = r"c:\Users\atejada\Documents\works\python\glparse\_out\sonicdash_stage1\trace.inc"
     ## window_size = 50
-    window_size = 2
+    ## window_size = 2
 
     lines = deinline(trace_filepath, window_size)
 
