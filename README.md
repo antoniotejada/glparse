@@ -6,6 +6,8 @@ Scripts to
 1. automatically refactor the code
 1. generate an Android APK
 
+See [pfc_final.pdf](pfc_final.pdf)
+
 # Files
 
 | Filename          | Description           |
